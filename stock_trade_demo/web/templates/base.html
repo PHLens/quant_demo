@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>{% block title %}Quant Snapshot Viewer{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/r0.css') }}">
+</head>
+<body data-page="{% block page_id %}{% endblock %}">
+  <div class="shell">
+    <aside class="sidebar" data-sidebar aria-label="Primary navigation">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">Q</span>
+        <span><strong>Quant Archive</strong><small>R0 · read-only viewer</small></span>
+      </div>
+      <p class="nav-label">Workspace</p>
+      <nav class="nav-list">
+        <a class="nav-link {% if request.path == '/' or request.path.startswith('/snapshot/') or request.path in ['/timing', '/us_timing', '/hk_timing', '/commodity'] %}active{% endif %}" href="/">
+          <span class="nav-dot" aria-hidden="true"></span>Snapshot Explorer
+        </a>
+        <a class="nav-link {% if request.path == '/legacy-artifacts' %}active{% endif %}" href="/legacy-artifacts">
+          <span class="nav-dot" aria-hidden="true"></span>Legacy Artifacts
+        </a>
+        <a class="nav-link {% if request.path == '/data-status' %}active{% endif %}" href="/data-status">
+          <span class="nav-dot" aria-hidden="true"></span>Data Status
+        </a>
+        <a class="nav-link {% if request.path == '/manual-records' %}active{% endif %}" href="/manual-records">
+          <span class="nav-dot" aria-hidden="true"></span>Manual Records
+        </a>
+      </nav>
+      <div class="sidebar-note">
+        Cached output only. No refresh, calculation, account connection, order placement, or scheduled action.
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="mobile-bar">
+        <strong>Quant Archive</strong>
+        <button class="menu-button" type="button" data-menu-button aria-expanded="false" aria-label="Open navigation">Menu</button>
+      </div>
+      <div class="content">
+        {% block content %}{% endblock %}
+      </div>
+    </main>
+  </div>
+  <script src="{{ url_for('static', filename='js/r0.js') }}" defer></script>
+</body>
+</html>

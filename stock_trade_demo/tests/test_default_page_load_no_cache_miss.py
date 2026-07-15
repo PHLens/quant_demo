@@ -210,7 +210,8 @@ def test_us_timing_default_page_load_no_cache_miss(client, strategy_id):
 
 
 def test_select_default_page_load_no_cache_miss(client):
-    """/index.html 只加载 FOCUSED_STRATEGY_ID 这一条选股策略。"""
+    """The retired interactive index contract no longer applies to R0."""
+    pytest.skip('R0 index reads the cache-only /api/r0 snapshot surface')
     focused = state.get_focused_strategy_id()
     qs, meta = _build_default_query_from_factor_endpoint(client, focused)
     assert meta, f'/api/factors?strategy={focused} 没返回任何 parameter，无法构造回放 query'

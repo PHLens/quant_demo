@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Manual Records · Quant Archive{% endblock %}
+{% block page_id %}manual-records{% endblock %}
+{% block content %}
+<header class="page-head">
+  <div>
+    <p class="eyebrow">Read-only manual ledger view</p>
+    <h1>Manual Records</h1>
+    <p class="lede">The public R0 viewer does not expose the legacy manual ledger or connect to any account.</p>
+  </div>
+  <div class="status-stack"><span class="badge danger">Unavailable</span><span class="badge" id="manual-record-count">unknown</span></div>
+</header>
+
+<div class="notice" role="note">
+  <span class="notice-icon" aria-hidden="true">!</span>
+  <div><strong>Manual rows do not qualify legacy evidence.</strong><p>They remain independent records and cannot rewrite a cached curve, ledger, review state or evidence label.</p></div>
+</div>
+
+<section aria-labelledby="records-heading">
+  <div class="section-head"><div><h2 id="records-heading">Manual row availability</h2><p>No read, create, edit, delete or reconciliation action is exposed in R0.</p></div></div>
+  <div class="card" id="manual-records-table" aria-live="polite"><div class="empty">Checking availability…</div></div>
+</section>
+{% endblock %}

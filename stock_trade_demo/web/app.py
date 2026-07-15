@@ -2,11 +2,10 @@
 
 启动入口现在是 stock_trade_demo/web_app.py（≤30 行 shim），它只调用 create_app() + run。
 所有路由按职责拆分在 web/blueprints/ 下：
-  - pages          → 4 个模板路由 (/ /timing /us_timing /live)
+  - pages          → R0 只读查看器页面
   - select_api     → 选股策略 API
   - timing_api     → A 股择时 API
   - us_timing_api  → 美股择时 API
-  - live_api       → 实盘记录 API（唯一写 live_trades.csv 的入口，走文件锁）
   - data_admin_api → 数据刷新 API
   - factor_explore_api → 行业热度 + 单因子回测只读 API
 """
@@ -16,15 +15,27 @@ import math
 import os
 import time
 import threading
-from flask import Flask
+from flask import Flask, jsonify, request
 from flask.json.provider import DefaultJSONProvider
 
+from web import serializers as _serializers
 from web import state
 from web.blueprints import (
     pages, select_api, timing_api, us_timing_api,
-    live_api, data_admin_api, factor_explore_api, commodity_api,
-    hk_timing_api,
+    data_admin_api, factor_explore_api, commodity_api,
+    hk_timing_api, r0_viewer_api,
 )
+
+
+_R0_BLOCKED_ENDPOINTS = {
+    # The R0 pages use the cache-only /api/r0 surface. These historical GET
+    # handlers can fetch network data or real-time quotes when files are absent.
+    'timing_api.api_timing_info',
+    'timing_api.api_timing_explore_compare',
+    'us_timing_api.api_us_timing_info',
+    'commodity_api.api_commodity_info',
+    'hk_timing_api.api_hk_timing_info',
+}
 
 
 def _sanitize_nan_for_json(obj):
@@ -66,48 +77,64 @@ def create_app() -> Flask:
     app.json_provider_class = _NaNSafeJSONProvider
     app.json = _NaNSafeJSONProvider(app)
 
+    # Keep the historical cache-view endpoint load-only without changing the
+    # serializer source fingerprint used by existing cache files.
+    _serializers._fetch_open_stock_quotes = lambda _result: {}
+
     app.register_blueprint(pages.bp)
     app.register_blueprint(select_api.bp)
     app.register_blueprint(timing_api.bp)
     app.register_blueprint(us_timing_api.bp)
-    app.register_blueprint(live_api.bp)
     app.register_blueprint(data_admin_api.bp)
     app.register_blueprint(factor_explore_api.bp)
     app.register_blueprint(commodity_api.bp)
     app.register_blueprint(hk_timing_api.bp)
+    app.register_blueprint(r0_viewer_api.bp)
+
+    @app.before_request
+    def _enforce_r0_read_only():
+        """Fail closed before any legacy mutation or fresh calculation path."""
+        if request.method not in {'GET', 'HEAD', 'OPTIONS'}:
+            return jsonify({
+                'error': 'read_only_viewer',
+                'message': 'R0 only exposes read-only snapshot access.',
+            }), 405
+        if request.endpoint in _R0_BLOCKED_ENDPOINTS:
+            return jsonify({
+                'error': 'read_only_viewer',
+                'message': 'Fresh calculation is unavailable in R0.',
+            }), 405
+        return None
+
+    @app.after_request
+    def _r0_security_headers(response):
+        response.headers.setdefault('X-Content-Type-Options', 'nosniff')
+        response.headers.setdefault('Referrer-Policy', 'same-origin')
+        response.headers.setdefault('X-Frame-Options', 'DENY')
+        response.headers.setdefault('Cache-Control', 'no-store')
+        return response
 
     return app
 
 
 def start_eager_load_thread() -> None:
-    """启动后台预加载线程：与原 web_app.py 的 _eager_load 行为等价。"""
+    """Load existing cache files in the background without building anything."""
 
     def _eager_load():
         state._LOAD_STATUS['loading'] = True
         state._LOAD_STATUS['start_time'] = time.time()
         try:
-            # Stage 1: stock_data
-            state._LOAD_STATUS['stage'] = 'stock_data'
-            state._LOAD_STATUS['message'] = '正在加载股票数据 (823MB CSV)...'
-            csv_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'stock_data.csv')
-            if os.path.exists(csv_path) and state.DATA_DF is None:
-                from backtest import load_data
-                state.DATA_DF = load_data(csv_path)
-            # Stage 2: index returns
-            state._LOAD_STATUS['stage'] = 'index_data'
-            state._LOAD_STATUS['message'] = '正在加载指数收益数据...'
-            state.ensure_index_returns_loaded()
-            # Stage 3: stock selection cache
+            # R0 deliberately skips raw-data loading, external refresh and any
+            # strategy calculation. Only already-built cache files are read.
             state._LOAD_STATUS['stage'] = 'strategy_cache'
-            state._LOAD_STATUS['message'] = '正在预热选股策略回测缓存...'
+            state._LOAD_STATUS['message'] = '正在读取选股快照缓存...'
             state.init_cache()
-            # Stage 4: timing cache
             state._LOAD_STATUS['stage'] = 'timing_cache'
-            state._LOAD_STATUS['message'] = '正在预热择时策略回测缓存...'
+            state._LOAD_STATUS['message'] = '正在读取择时快照缓存...'
             state.init_timing_cache()
-            # Stage 5: 单因子缓存
+            state.init_us_timing_cache()
             state._LOAD_STATUS['stage'] = 'factor_cache'
-            state._LOAD_STATUS['message'] = '正在加载单因子回测缓存...'
+            state._LOAD_STATUS['message'] = '正在读取单因子快照缓存...'
             if state._load_factor_backtest_cache():
                 print('[init] 单因子回测缓存加载成功')
             else:

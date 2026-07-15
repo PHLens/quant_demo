@@ -381,53 +381,14 @@ def ensure_stock_data_loaded():
 
 
 def init_cache():
-    """按需预热选股缓存。"""
-    global CSI1000_SIGNAL_SERIES
-    ensure_index_returns_loaded()
-    ensure_stock_data_loaded()
-    if CSI1000_SIGNAL_SERIES is None:
-        try:
-            ensure_timing_panel_loaded()
-            csi_strategy = build_timing_strategy('csi1000_timing')
-            signal_df = csi_strategy.run(TIMING_PANEL.copy())
-            CSI1000_SIGNAL_SERIES = pd.Series(
-                pd.to_numeric(signal_df['target_exposure'], errors='coerce').fillna(0.0).values,
-                index=pd.to_datetime(signal_df['交易日期']),
-            ).sort_index()
-            print('[init] CSI1000 择时信号预加载完成，共 {} 条'.format(len(CSI1000_SIGNAL_SERIES)))
-        except Exception as e:
-            print(f'[WARN] CSI1000 择时信号加载失败: {e}')
-
-    if not BACKTEST_CACHE and _load_disk_cache() and get_focused_strategy_id() in BACKTEST_CACHE:
+    """Load the prebuilt stock-selection cache; never calculate in Flask."""
+    if BACKTEST_CACHE:
         return
-
-    if BACKTEST_CACHE and get_focused_strategy_id() in BACKTEST_CACHE:
-        return
-
-    sid = get_focused_strategy_id()
-    cls = STRATEGY_MAP.get(sid)
-    if cls is None:
-        return
-    try:
-        print(f"[init] 预运行 {sid} 策略...")
-        s = cls()
-        df = s.run(DATA_DF.copy())
-        result = select_and_backtest(df, s,
-                                     c_rate=s.c_rate, t_rate=s.t_rate,
-                                     bull_tp=s.bull_tp, bear_tp=s.bear_tp,
-                                     bull_n=s.bull_n, bear_n=s.bear_n,
-                                     initial_capital=s.initial_capital)
-        if hasattr(s, '_profile_summary'):
-            result.attrs['strategy_meta'] = {
-                'profile_summary': getattr(s, '_profile_summary', []),
-            }
-            _PROFILE_SUMMARY_CACHE[sid] = getattr(s, '_profile_summary', [])
-        ev = strategy_evaluate(result, index_returns=INDEX_RETURNS)
-        BACKTEST_CACHE[sid] = (result, ev)
-        print(f"[init] {sid} 完成, 累积净值: {result['累积净值'].iloc[-1]:.2f}")
-        _save_disk_cache()
-    except Exception as e:
-        print(f"[init] {sid} 失败: {e}")
+    if not _load_disk_cache():
+        print(
+            f'[init] 选股缓存缺失或不兼容: {_cache_store.WEB_CACHE_FILE}; '
+            'R0 保持 unavailable，不在 Web 进程中重建。'
+        )
 
 
 def ensure_timing_panel_loaded():
@@ -470,25 +431,9 @@ def ensure_commodity_panel_loaded(force_reload=False):
 
 
 def init_commodity_cache():
-    """Initialize commodity timing caches on demand (lazy, called at first API request)."""
-    global COMMODITY_CACHE
-    if not COMMODITY_STRATEGY_MAP:
-        return
-    ensure_commodity_panel_loaded()
-    if COMMODITY_PANEL is None or len(COMMODITY_PANEL) == 0:
-        return
-    for sid, cls in COMMODITY_STRATEGY_MAP.items():
-        if sid in COMMODITY_CACHE:
-            continue
-        try:
-            strategy = cls()
-            signal_df = strategy.run(COMMODITY_PANEL.copy())
-            result = run_timing_backtest(signal_df, strategy, benchmark_returns=INDEX_RETURNS_MAP.get(strategy.get_index_id()))
-            COMMODITY_CACHE[sid] = result
-            nav = float(result['累积净值'].iloc[-1]) if len(result) else float('nan')
-            print(f"[init] {sid} 大宗商品择时完成, 累积净值: {nav:.2f}")
-        except Exception as e:
-            print(f"[init] {sid} 大宗商品择时失败: {e}")
+    """R0 has no commodity cache builder or request-time fallback."""
+    if not COMMODITY_CACHE:
+        print('[init] 大宗商品预构建缓存不可用；R0 不在 Web 进程中计算。')
 
 
 def ensure_hk_panel_loaded(force_reload=False):
@@ -505,24 +450,9 @@ def ensure_hk_panel_loaded(force_reload=False):
 
 
 def init_hk_cache():
-    global HK_CACHE
-    if not HK_STRATEGY_MAP:
-        return
-    ensure_hk_panel_loaded()
-    if HK_PANEL is None or len(HK_PANEL) == 0:
-        return
-    for sid, cls in HK_STRATEGY_MAP.items():
-        if sid in HK_CACHE:
-            continue
-        try:
-            strategy = cls()
-            signal_df = strategy.run(HK_PANEL.copy())
-            result = run_timing_backtest(signal_df, strategy, benchmark_returns=INDEX_RETURNS_MAP.get(strategy.get_index_id()))
-            HK_CACHE[sid] = result
-            nav = float(result['累积净值'].iloc[-1]) if len(result) else float('nan')
-            print(f"[init] {sid} 港股择时完成, 累积净值: {nav:.2f}")
-        except Exception as e:
-            print(f"[init] {sid} 港股择时失败: {e}")
+    """R0 has no Hong Kong cache builder or request-time fallback."""
+    if not HK_CACHE:
+        print('[init] 港股预构建缓存不可用；R0 不在 Web 进程中计算。')
 
 
 def build_us_timing_strategy(strategy_name='macro_v32_timing', **params):
@@ -585,31 +515,14 @@ def init_us_timing_cache():
 
 
 def init_timing_cache():
-    ensure_timing_panel_loaded()
-    global TIMING_CACHE, CSI1000_SIGNAL_SERIES
-
-    if not TIMING_CACHE:
-        _load_disk_cache()
-
+    """Load the prebuilt China timing cache; never calculate in Flask."""
     if TIMING_CACHE:
         return
-
-    TIMING_CACHE = {}
-    for sid, cls in TIMING_STRATEGY_MAP.items():
-        try:
-            strategy = build_timing_strategy(sid)
-            signal_df = strategy.run(TIMING_PANEL.copy())
-            if sid == 'csi1000_timing':
-                CSI1000_SIGNAL_SERIES = pd.Series(
-                    pd.to_numeric(signal_df['target_exposure'], errors='coerce').fillna(0.0).values,
-                    index=pd.to_datetime(signal_df['交易日期']),
-                ).sort_index()
-            result = run_timing_backtest(signal_df, strategy, benchmark_returns=INDEX_RETURNS_MAP.get(strategy.get_index_id()))
-            TIMING_CACHE[sid] = result
-            print(f"[init] {sid} 择时策略完成, 累积净值: {result['累积净值'].iloc[-1]:.2f}, exposure_mode={getattr(strategy, 'exposure_mode', 'binary')}")
-        except Exception as e:
-            print(f"[init] {sid} 择时策略失败: {e}")
-    _save_disk_cache()
+    if not _load_disk_cache():
+        print(
+            f'[init] A 股择时缓存缺失或不兼容: {_cache_store.WEB_CACHE_FILE}; '
+            'R0 保持 unavailable，不在 Web 进程中重建。'
+        )
 
 
 def _get_csi1000_timing_gate():

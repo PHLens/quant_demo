@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}{{ snapshot_source.name }} · Quant Archive{% endblock %}
+{% block page_id %}snapshot{% endblock %}
+{% block content %}
+<header class="page-head">
+  <div>
+    <p class="eyebrow">Legacy source detail</p>
+    <h1>{{ snapshot_source.name }}</h1>
+    <p class="lede">{{ snapshot_source.description }}</p>
+  </div>
+  <div class="status-stack">
+    <span class="badge warning" id="snapshot-status">unverified</span>
+    <span class="badge">provenance: unknown</span>
+  </div>
+</header>
+
+<div class="notice" role="note">
+  <span class="notice-icon" aria-hidden="true">!</span>
+  <div>
+    <strong>Legacy snapshot, not qualified research evidence.</strong>
+    <p>This page shows one cached source only. It does not infer missing lineage, merge other files, or change the stored configuration.</p>
+  </div>
+</div>
+
+<div class="toolbar">
+  <div class="field">
+    <label for="strategy-select">Cached strategy view</label>
+    <select id="strategy-select" aria-describedby="strategy-help"><option>Loading metadata…</option></select>
+  </div>
+  <div class="toolbar-note" id="strategy-help">Changing this selection only reads a different prebuilt cache entry. It does not calculate or modify anything.</div>
+</div>
+
+<div id="snapshot-error" class="notice" role="status" aria-live="polite" hidden></div>
+
+<section aria-labelledby="summary-heading">
+  <div class="section-head">
+    <div><h2 id="summary-heading">Snapshot summary</h2><p>Data as of: <strong id="snapshot-date">unknown</strong></p></div>
+  </div>
+  <div class="grid metrics" id="snapshot-metrics">
+    <article class="card metric-card"><span>Cumulative value</span><strong>unknown</strong></article>
+    <article class="card metric-card"><span>Total return</span><strong>unknown</strong></article>
+    <article class="card metric-card"><span>Max drawdown</span><strong>unknown</strong></article>
+    <article class="card metric-card"><span>Observations</span><strong>unknown</strong></article>
+  </div>
+</section>
+
+<section class="section" aria-labelledby="detail-heading">
+  <div class="section-head"><div><h2 id="detail-heading">Stored detail</h2><p>Only fields already present in this cache are shown.</p></div></div>
+  <div class="tabs" role="tablist" aria-label="Snapshot detail">
+    <button class="tab" type="button" role="tab" aria-selected="true" aria-controls="curve-panel">Curve</button>
+    <button class="tab" type="button" role="tab" aria-selected="false" aria-controls="holdings-panel">Holdings</button>
+    <button class="tab" type="button" role="tab" aria-selected="false" aria-controls="trades-panel">Trades</button>
+    <button class="tab" type="button" role="tab" aria-selected="false" aria-controls="configuration-panel">Configuration</button>
+  </div>
+  <div class="card tab-panel" id="curve-panel" role="tabpanel">
+    <h3>Cached equity curve</h3>
+    <p class="lede">A visual rendering of the values stored in this source; no qualification is implied.</p>
+    <div id="snapshot-chart" class="chart-wrap" aria-live="polite"><div class="chart-empty">Loading cached curve…</div></div>
+  </div>
+  <div class="card tab-panel" id="holdings-panel" role="tabpanel" hidden>
+    <h3>Cached holdings</h3>
+    <p class="lede">Availability and columns depend on this source alone.</p>
+    <div id="holdings-table"><div class="empty">Loading cached rows…</div></div>
+  </div>
+  <div class="card tab-panel" id="trades-panel" role="tabpanel" hidden>
+    <h3>Cached trade rows</h3>
+    <p class="lede">These rows are historical cache fields, not instructions.</p>
+    <div id="trades-table"><div class="empty">Loading cached rows…</div></div>
+  </div>
+  <div class="card tab-panel" id="configuration-panel" role="tabpanel" hidden>
+    <h3>Original configuration</h3>
+    <p class="lede">Values are display-only. Offline build reference: <code>{{ snapshot_source.build_hint }}</code></p>
+    <div id="configuration-list"><div class="empty">Loading configuration metadata…</div></div>
+  </div>
+</section>
+
+<script id="snapshot-config" type="application/json">{{ snapshot_source | tojson }}</script>
+{% endblock %}

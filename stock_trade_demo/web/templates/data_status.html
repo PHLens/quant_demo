@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Data Status · Quant Archive{% endblock %}
+{% block page_id %}data-status{% endblock %}
+{% block content %}
+<header class="page-head">
+  <div>
+    <p class="eyebrow">Observed static files</p>
+    <h1>Data Status</h1>
+    <p class="lede">A read-only inventory of fixed data files and sidecars. R0 does not refresh data, contact a provider, rebuild a cache, or infer unknown vintage.</p>
+  </div>
+  <div class="status-stack"><span class="badge ok">Observation only</span></div>
+</header>
+
+<div class="notice" role="note">
+  <span class="notice-icon" aria-hidden="true">i</span>
+  <div><strong>File timestamps are not data freshness proof.</strong><p>Coverage, source vintage and point-in-time availability remain unknown unless an immutable source record already supplies them.</p></div>
+</div>
+
+<section aria-labelledby="status-heading">
+  <div class="section-head"><div><h2 id="status-heading">Static source status</h2><p>Checked at <span id="status-checked-at">loading…</span></p></div></div>
+  <div id="data-status-list" class="status-list" aria-live="polite"><div class="empty">Loading observed file status…</div></div>
+</section>
+{% endblock %}

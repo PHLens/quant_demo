@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Legacy Artifacts · Quant Archive{% endblock %}
+{% block page_id %}legacy{% endblock %}
+{% block content %}
+<header class="page-head">
+  <div>
+    <p class="eyebrow">Independent source inventory</p>
+    <h1>Legacy Artifacts</h1>
+    <p class="lede">Each profile, sensitivity table, holdout note, cached curve and cache container stays separate. Presence does not establish provenance or eligibility.</p>
+  </div>
+  <div class="status-stack"><span class="badge warning">unknown</span><span class="badge warning">unverified</span></div>
+</header>
+
+<div class="notice" role="note">
+  <span class="notice-icon" aria-hidden="true">!</span>
+  <div><strong>Downloads are narrowly allowlisted.</strong><p>Only fixed public JSON or CSV entries under the repository root are eligible. Type, size, path, symlink and sensitive-content checks apply before delivery.</p></div>
+</div>
+
+<section aria-labelledby="artifacts-heading">
+  <div class="section-head"><div><h2 id="artifacts-heading">Known sources</h2><p>No source is silently joined to another.</p></div></div>
+  <div id="artifact-grid" class="grid artifacts" aria-live="polite"><div class="card empty">Loading artifact inventory…</div></div>
+</section>
+{% endblock %}
