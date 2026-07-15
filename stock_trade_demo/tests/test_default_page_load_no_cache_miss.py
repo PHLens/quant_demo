@@ -196,6 +196,7 @@ def _assert_no_cache_miss(resp, *, strategy_id, where):
 # 主回归：每条策略一例
 # ───────────────────────────────────────────────────────────────────────
 @pytest.mark.parametrize('strategy_id', sorted(state.TIMING_STRATEGY_MAP.keys()))
+@pytest.mark.skip(reason='v0.1 retires the isolated legacy timing HTTP surface; canonical route isolation is covered in test_r0_viewer')
 def test_timing_default_page_load_no_cache_miss(client, strategy_id):
     qs, meta = _build_default_query_from_params_endpoint(
         client, '/api/timing/params', strategy_id,
@@ -206,6 +207,7 @@ def test_timing_default_page_load_no_cache_miss(client, strategy_id):
 
 
 @pytest.mark.parametrize('strategy_id', sorted(state.US_TIMING_PAGE_STRATEGY_IDS))
+@pytest.mark.skip(reason='v0.1 retires the isolated legacy US timing HTTP surface; canonical route isolation is covered in test_r0_viewer')
 def test_us_timing_default_page_load_no_cache_miss(client, strategy_id):
     qs, meta = _build_default_query_from_params_endpoint(
         client, '/api/us_timing/params', strategy_id,
@@ -302,6 +304,7 @@ def _us_timing_cache_cold_then_restore():
         pass
 
 
+@pytest.mark.skip(reason='v0.1 canonical Viewer GET never lazy-loads legacy caches')
 def test_us_timing_backtest_lazy_inits_cache_on_first_hit(client, _us_timing_cache_cold_then_restore):
     """守住 us_timing_api.py 入口的 `state.init_us_timing_cache()` 守卫。
 

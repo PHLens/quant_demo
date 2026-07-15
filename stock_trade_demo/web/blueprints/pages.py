@@ -1,97 +1,57 @@
-"""R0 Snapshot / Legacy Viewer pages.
-
-The R0 shell intentionally exposes four destinations only. Historical snapshot
-URLs remain as aliases so old bookmarks land on a matching read-only source.
-"""
+"""Canonical v0.1 pages plus one-hop, query-discarding HTML aliases."""
 from __future__ import annotations
 
-from flask import Blueprint, abort, render_template
+from flask import Blueprint, redirect, render_template, request
+
 
 bp = Blueprint('pages', __name__)
 
 
-SNAPSHOT_SOURCES = {
-    'selection': {
-        'id': 'selection',
-        'name': 'A-share selection cache',
-        'description': 'Cached stock-selection output. Parameters and evidence fields are display-only.',
-        'default_strategy': 'original_ensemble',
-        'build_hint': 'python scripts/build_select_cache.py',
-    },
-    'cn-timing': {
-        'id': 'cn-timing',
-        'name': 'China timing cache',
-        'description': 'Cached China timing curves, positions, fees and signal fields.',
-        'default_strategy': 'csi1000_timing',
-        'build_hint': 'python scripts/build_timing_cache.py',
-    },
-    'us-timing': {
-        'id': 'us-timing',
-        'name': 'US timing cache',
-        'description': 'Cached US timing curves, positions, fees and signal fields.',
-        'default_strategy': 'macro_v32_timing',
-        'build_hint': 'python scripts/build_us_timing_cache.py',
-    },
-    'hk-timing': {
-        'id': 'hk-timing',
-        'name': 'Hong Kong timing legacy source',
-        'description': 'Legacy Hong Kong source. It is unavailable unless a prebuilt cache is present.',
-        'default_strategy': 'hsi_timing',
-        'build_hint': 'No R0 web build action is available.',
-    },
-    'commodity': {
-        'id': 'commodity',
-        'name': 'Commodity timing legacy source',
-        'description': 'Legacy commodity source. It is unavailable unless a prebuilt cache is present.',
-        'default_strategy': 'gold_timing',
-        'build_hint': 'No R0 web build action is available.',
-    },
-}
+@bp.get('/snapshots')
+def snapshots_page():
+    return render_template('snapshot.html', snapshot_query={
+        'source_id': request.args.get('source_id', 'selection'),
+        'strategy_id': request.args.get('strategy_id', 'original_ensemble'),
+        'tab': request.args.get('tab', 'summary'),
+        'initial_range': request.args.get('initial_range', 'full'),
+    })
 
 
-@bp.route('/')
-def index():
-    return render_template('index.html')
-
-
-@bp.route('/snapshot/<source_id>')
-def snapshot_page(source_id):
-    source = SNAPSHOT_SOURCES.get(source_id)
-    if source is None:
-        abort(404)
-    return render_template('snapshot.html', snapshot_source=source)
-
-
-@bp.route('/legacy-artifacts')
+@bp.get('/legacy-artifacts')
 def legacy_artifacts_page():
     return render_template('legacy.html')
 
 
-@bp.route('/data-status')
+@bp.get('/data-status')
 def data_status_page():
     return render_template('data_status.html')
 
 
-@bp.route('/manual-records')
+@bp.get('/manual-records')
 def manual_records_page():
-    return render_template('manual_records.html')
+    return render_template('manual_records.html', initial_strategy=request.args.get('strategy', 'star50_timing'))
 
 
-@bp.route('/timing')
-def timing_page():
-    return snapshot_page('cn-timing')
+_ALIASES = {
+    '/': '/snapshots?source_id=selection&strategy_id=original_ensemble&tab=summary&initial_range=full',
+    '/timing': '/snapshots?source_id=a_share_timing&strategy_id=csi1000_timing&initial_range=6m',
+    '/us_timing': '/snapshots?source_id=us_timing&strategy_id=macro_v32_timing&initial_range=6m',
+    '/hk_timing': '/snapshots?source_id=hk_timing&strategy_id=hsi_timing&initial_range=full',
+    '/commodity': '/snapshots?source_id=commodity&strategy_id=gold_timing&initial_range=full',
+    '/live': '/manual-records?strategy=star50_timing',
+}
 
 
-@bp.route('/us_timing')
-def us_timing_page():
-    return snapshot_page('us-timing')
+def _alias(destination: str):
+    # Never inspect request.args: every legacy page ignored page query and the
+    # compatibility contract preserves that behavior exactly.
+    return redirect(destination, code=302)
 
 
-@bp.route('/commodity')
-def commodity_page():
-    return snapshot_page('commodity')
-
-
-@bp.route('/hk_timing')
-def hk_timing_page():
-    return snapshot_page('hk-timing')
+for _index, (_path, _destination) in enumerate(_ALIASES.items()):
+    bp.add_url_rule(
+        _path,
+        endpoint=f'legacy_html_alias_{_index}',
+        view_func=lambda destination=_destination: _alias(destination),
+        methods=['GET'],
+    )

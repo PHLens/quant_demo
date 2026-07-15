@@ -2,22 +2,8 @@
 {% block title %}Data Status · Quant Archive{% endblock %}
 {% block page_id %}data-status{% endblock %}
 {% block content %}
-<header class="page-head">
-  <div>
-    <p class="eyebrow">Observed static files</p>
-    <h1>Data Status</h1>
-    <p class="lede">A read-only inventory of fixed data files and sidecars. R0 does not refresh data, contact a provider, rebuild a cache, or infer unknown vintage.</p>
-  </div>
-  <div class="status-stack"><span class="badge ok">Observation only</span></div>
-</header>
-
-<div class="notice" role="note">
-  <span class="notice-icon" aria-hidden="true">i</span>
-  <div><strong>File timestamps are not data freshness proof.</strong><p>Coverage, source vintage and point-in-time availability remain unknown unless an immutable source record already supplies them.</p></div>
-</div>
-
-<section aria-labelledby="status-heading">
-  <div class="section-head"><div><h2 id="status-heading">Static source status</h2><p>Checked at <span id="status-checked-at">loading…</span></p></div></div>
-  <div id="data-status-list" class="status-list" aria-live="polite"><div class="empty">Loading observed file status…</div></div>
-</section>
+<header class="page-head"><div><p class="eyebrow">Local status and explicit actions</p><h1>Data Status</h1><p class="lede">GET checks local metadata only. A POST can explicitly pull fixed scopes and rebuild affected registered targets.</p></div><div class="status-stack"><span class="badge" id="status-checked-at">loading</span></div></header>
+<section aria-labelledby="status-heading"><div class="section-head"><div><h2 id="status-heading">Source status</h2><p>Freshness is shown per scope; one newer cache never hides another stale scope.</p></div></div><div id="data-status-list" class="status-list" aria-live="polite"></div></section>
+<section class="section card" aria-labelledby="operations-heading"><h2 id="operations-heading">数据操作</h2><p>确认只防误触，不是安全授权。</p><fieldset class="scope-grid" id="update-scopes"><legend>Fixed scopes</legend><label><input type="checkbox" value="index"> index</label><label><input type="checkbox" value="aux"> aux</label><label><input type="checkbox" value="stock"> stock</label><label><input type="checkbox" value="factor"> factor</label></fieldset><label><input id="update-force" type="checkbox"> Force explicitly selected scopes only</label><div class="card-actions"><button class="button" id="preview-update" type="button">Preview plan</button><button class="button primary" id="start-update" type="button" disabled>Confirm and update</button><button class="button" id="retry-update" type="button" hidden>Retry failed steps</button></div><pre id="update-plan" class="plan-box" aria-live="polite"></pre><div id="update-progress" aria-live="polite"></div></section>
+<section class="section card" aria-labelledby="restart-heading"><h2 id="restart-heading">Service restart</h2><p id="restart-capability">Checking required socket-activation topology…</p><button class="button" id="restart-service" type="button" disabled>Restart unavailable</button><div id="restart-progress" aria-live="polite"></div></section>
 {% endblock %}

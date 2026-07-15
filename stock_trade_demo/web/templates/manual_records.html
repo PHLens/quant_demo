@@ -2,22 +2,23 @@
 {% block title %}Manual Records · Quant Archive{% endblock %}
 {% block page_id %}manual-records{% endblock %}
 {% block content %}
-<header class="page-head">
-  <div>
-    <p class="eyebrow">Read-only manual ledger view</p>
-    <h1>Manual Records</h1>
-    <p class="lede">The public R0 viewer does not expose the legacy manual ledger or connect to any account.</p>
-  </div>
-  <div class="status-stack"><span class="badge danger">Unavailable</span><span class="badge" id="manual-record-count">unknown</span></div>
-</header>
-
-<div class="notice" role="note">
-  <span class="notice-icon" aria-hidden="true">!</span>
-  <div><strong>Manual rows do not qualify legacy evidence.</strong><p>They remain independent records and cannot rewrite a cached curve, ledger, review state or evidence label.</p></div>
-</div>
-
-<section aria-labelledby="records-heading">
-  <div class="section-head"><div><h2 id="records-heading">Manual row availability</h2><p>No read, create, edit, delete or reconciliation action is exposed in R0.</p></div></div>
-  <div class="card" id="manual-records-table" aria-live="polite"><div class="empty">Checking availability…</div></div>
+<header class="page-head"><div><p class="eyebrow">手工研究记录 / 缓存信号参考 / 对账</p><h1>Manual Records</h1><p class="lede">不连接账户、不下单。记录与 published research signal 分栏展示，action context 明确为不可执行参考。</p></div><div class="status-stack"><span class="badge danger">public-unsafe</span><span class="badge" id="manual-record-count">0</span></div></header>
+<div class="toolbar"><div class="field"><label for="manual-strategy">Strategy</label><select id="manual-strategy"></select></div><button class="button" id="refresh-records" type="button">Refresh</button></div>
+<div id="manual-message" class="notice" role="status" aria-live="polite" hidden></div>
+<section class="grid sources manual-grid">
+  <article class="card"><h2>Add research record</h2><form id="manual-form">
+    <div class="field"><label for="record-date">Date</label><input id="record-date" name="date" type="date" required></div>
+    <div class="field"><label for="record-capital">Capital</label><input id="record-capital" name="capital" type="number" min="0.01" step="0.01" value="50000"></div>
+    <div class="field"><label for="record-signal-target">Signal target (optional note)</label><input id="record-signal-target" name="signal_target" type="number" step="0.0001"></div>
+    <div class="field"><label for="record-exec-price">Execution price (pair with shares)</label><input id="record-exec-price" name="exec_price" type="number" min="0.00000001" step="any"></div>
+    <div class="field"><label for="record-shares">Shares (pair with execution price)</label><input id="record-shares" name="shares" type="number" min="0" step="any"></div>
+    <div class="field"><label for="record-position">Actual position [0,1] (required without execution pair)</label><input id="record-position" name="actual_position" type="number" min="0" max="1" step="0.0001"></div>
+    <div class="field"><label for="record-notes">Notes (plain text)</label><textarea id="record-notes" name="notes" maxlength="500"></textarea></div>
+    <button class="button primary" type="submit">Add record</button>
+  </form></article>
+  <article class="card"><h2>缓存信号参考</h2><p>Choose an exact published snapshot from Snapshot Explorer to open signal-reference. It never changes the published signal.</p><div id="signal-reference"></div></article>
 </section>
+<section class="section" aria-labelledby="records-heading"><div class="section-head"><div><h2 id="records-heading">Research ledger</h2><p>Delete is irreversible; the idempotency tombstone keeps no payload.</p></div></div><div id="manual-records-table" aria-live="polite"></div></section>
+<section class="section card"><h2>对账</h2><p>Cache-only approximation. It does not infer unrecorded fills or fees.</p><div id="reconciliation-view"></div></section>
+<script id="manual-config" type="application/json">{{ {'strategy': initial_strategy} | tojson }}</script>
 {% endblock %}

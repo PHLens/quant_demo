@@ -1,6 +1,8 @@
-"""R0 viewer contract: honest labels, read-only routes and cache-only data."""
+"""v0.1 canonical Viewer, state tuple, pagination and zero-side-effect contracts."""
 from __future__ import annotations
 
+from copy import deepcopy
+from pathlib import Path
 import re
 
 import pandas as pd
@@ -8,204 +10,209 @@ import pytest
 
 from web import state
 from web.app import create_app
+from web.v01.catalog import get_strategy, variants_for
+from web.v01.snapshot_store import PUBLISHED_SIGNAL_KEYS, publish_entry
 
 
 @pytest.fixture()
-def app():
+def app(tmp_path):
     app = create_app()
-    app.config.update(TESTING=True)
+    app.config.update(
+        TESTING=True,
+        R0_GENERATION_ROOT=tmp_path / 'generations',
+        R0_MANUAL_LEDGER_PATH=tmp_path / 'manual.csv',
+        R0_ACTION_MARKER_PATH=tmp_path / 'active-operation.json',
+        R0_CURSOR_KEY='test-cursor-key',
+    )
     return app
 
 
 @pytest.fixture()
 def client(app):
-    with app.test_client() as test_client:
-        yield test_client
+    return app.test_client()
 
 
-@pytest.mark.parametrize(
-    'path',
-    [
-        '/', '/snapshot/selection', '/snapshot/cn-timing', '/snapshot/us-timing',
-        '/snapshot/hk-timing', '/snapshot/commodity', '/legacy-artifacts',
-        '/data-status', '/manual-records', '/timing', '/us_timing',
-        '/hk_timing', '/commodity',
-    ],
-)
-def test_r0_pages_expose_only_the_four_navigation_destinations(client, path):
+def _signal(strategy_id='csi1000_timing', *, stale=None, degraded=None, target=1.0):
+    payload = {key: None for key in PUBLISHED_SIGNAL_KEYS}
+    payload.update({
+        'strategy_id': strategy_id, 'name': strategy_id, 'index_name': 'Index',
+        'etf_code': '510500', 'etf_name': 'ETF', 'as_of_date': '2026-01-04',
+        'settled_as_of_date': '2026-01-03', 'data_stale_warning': stale,
+        'degraded_reason': degraded, 'target_exposure': target,
+        'prev_exposure': 0.5, 'exposure_delta': target - 0.5,
+        'rebalance_action': 'add', 'rebalance_label': 'Add', 'signal_action': 'buy',
+        'signal_label': 'Buy', 'current_action': 'buy', 'current_position': 1,
+        'current_reason': 'stored', 'reason_summary': 'stored', 'bullish_score': 0.8,
+        'ref_close': 10.0, 'ref_open': 10.2, 'nav': 1.1, 'settled_nav': 1.09,
+        'status': 'research', 'passes_rule14': None, 'exec_basis': 'next_open',
+    })
+    return payload
+
+
+def _timing_frame(*, target_state=None, rows=5):
+    dates = pd.date_range('2026-01-01', periods=rows, freq='D')
+    frame = pd.DataFrame({
+        '交易日期': dates, '累积净值': [1 + index * 0.01 for index in range(rows)],
+        'strategy_return': [0.0] + [0.01] * (rows - 1), 'signal_action': ['hold'] * (rows - 1) + ['buy'],
+        'position': [0] * (rows - 1) + [1], 'reason_summary': ['stored'] * rows,
+        'reason_detail': [[] for _ in range(rows)], 'signal_score': [0.5] * rows,
+        'strength_score': [0.6] * rows, 'target_exposure': [0.0] * (rows - 1) + [1.0],
+        'prev_exposure': [0.0] * rows, 'exposure_change': [0.0] * (rows - 1) + [1.0],
+        'rebalance_action': ['flat'] * (rows - 1) + ['enter'], 'close': [10 + index for index in range(rows)],
+        'etf_open': [1 + index * 0.1 for index in range(rows)], 'etf_close': [1.05 + index * 0.1 for index in range(rows)],
+        'trade_quantity': [0] * (rows - 1) + [100], 'trade_amount': [0] * (rows - 1) + [1000],
+        'trade_fee_amount': [0] * (rows - 1) + [1], 'holding_value': [0] * (rows - 1) + [1000],
+        'cash_balance': [50000] * rows, 'index_id': ['csi1000'] * rows, 'index_name': ['CSI 1000'] * rows,
+    })
+    target_state = target_state or {'cache_state': 'ready', 'readable': True, 'freshness_state': 'current', 'freshness_reason': None, 'degradation': None}
+    frame.attrs['r0_target_state'] = target_state
+    frame.attrs['r0_generated_at'] = '2026-01-05T00:00:00Z'
+    frame.attrs['published_current_signal'] = _signal(
+        stale=target_state['freshness_reason']['code'] if target_state['freshness_state'] == 'stale' else None,
+        degraded=target_state['degradation']['code'] if target_state['degradation'] else None,
+    )
+    return frame
+
+
+def _publish(app, frame=None):
+    with app.app_context():
+        spec = get_strategy('a_share_timing', 'csi1000_timing')
+        variant = variants_for(spec)[0]
+        publish_entry(spec, variant, frame if frame is not None else _timing_frame())
+        return spec, variant
+
+
+@pytest.mark.parametrize('path,destination', [
+    ('/', '/snapshots?source_id=selection&strategy_id=original_ensemble&tab=summary&initial_range=full'),
+    ('/timing', '/snapshots?source_id=a_share_timing&strategy_id=csi1000_timing&initial_range=6m'),
+    ('/us_timing', '/snapshots?source_id=us_timing&strategy_id=macro_v32_timing&initial_range=6m'),
+    ('/hk_timing', '/snapshots?source_id=hk_timing&strategy_id=hsi_timing&initial_range=full'),
+    ('/commodity', '/snapshots?source_id=commodity&strategy_id=gold_timing&initial_range=full'),
+    ('/live', '/manual-records?strategy=star50_timing'),
+])
+def test_legacy_html_aliases_are_one_hop_and_discard_query(client, path, destination):
+    response = client.get(path + '?force=1&strategy=ignored', follow_redirects=False)
+    assert response.status_code == 302
+    assert response.headers['Location'] == destination
+
+
+@pytest.mark.parametrize('path', ['/snapshots', '/legacy-artifacts', '/data-status', '/manual-records'])
+def test_four_canonical_pages_share_navigation_and_public_warning(client, path):
     response = client.get(path)
     assert response.status_code == 200
     html = response.get_data(as_text=True)
     for label in ('Snapshot Explorer', 'Legacy Artifacts', 'Data Status', 'Manual Records'):
         assert label in html
-    forbidden = re.compile(r'\b(Project|Run|Compare|OOS|Approved)\b|Frozen\s+Report', re.IGNORECASE)
-    assert not forbidden.search(html)
+    assert 'Public unsafe mode' in html
+    assert '不是访问控制' in html
+    assert not re.search(r'API.?key|paper trading|testnet|scheduler', html, re.I)
 
 
-def test_r0_blocks_legacy_mutation_before_handler(client, monkeypatch):
-    def forbidden(*_args, **_kwargs):
-        raise AssertionError('blocked handler was executed')
-
-    monkeypatch.setattr(state, '_run_data_update', forbidden)
-    response = client.post('/api/update_data')
-    assert response.status_code == 405
-    assert response.get_json()['error'] == 'read_only_viewer'
-
-
-def test_r0_blocks_manual_record_write_before_handler(client, monkeypatch):
-    from services import live_trades
-
-    monkeypatch.setattr(live_trades, 'append_record', lambda *_a, **_k: (_ for _ in ()).throw(AssertionError('write called')))
-    response = client.post('/api/live/record', json={'date': '2026-01-01', 'strategy': 'csi1000_timing'})
-    assert response.status_code == 405
-    assert response.get_json()['error'] == 'read_only_viewer'
-
-    monkeypatch.setattr(live_trades, 'delete_record', lambda *_a, **_k: (_ for _ in ()).throw(AssertionError('delete called')))
-    delete_response = client.delete('/api/live/record/1')
-    assert delete_response.status_code == 405
-    assert delete_response.get_json()['error'] == 'read_only_viewer'
-
-
-def test_manual_record_storage_is_explicitly_unavailable(client):
-    response = client.get('/api/r0/manual-records')
-    assert response.status_code == 200
-    assert response.get_json() == {
-        'available': False,
-        'records': [],
-        'provenance': 'unknown',
-        'evidence_status': 'unverified',
-        'message': 'Manual record storage is not exposed by this public R0 viewer.',
-    }
-
-
-def test_legacy_live_surface_is_not_registered(app, client):
-    assert not any(rule.rule.startswith('/api/live/') for rule in app.url_map.iter_rules())
-    assert client.get('/live').status_code == 404
-
-
-def test_r0_blocks_fresh_calculation_endpoint(client, monkeypatch):
-    monkeypatch.setattr(state, 'run_timing_backtest_fresh', lambda *_a, **_k: (_ for _ in ()).throw(AssertionError('calculation called')))
-    response = client.get('/api/timing/explore_compare?force=1')
-    assert response.status_code == 404
-
-
-def test_r0_app_registers_no_legacy_api_blueprints(app):
+def test_only_canonical_api_blueprint_is_registered(app, client):
     rules = list(app.url_map.iter_rules())
     api_rules = [rule for rule in rules if rule.rule.startswith('/api/')]
-    assert api_rules
-    assert all(rule.rule.startswith('/api/r0/') for rule in api_rules)
-    assert all(
-        rule.endpoint == 'static'
-        or rule.endpoint.startswith('pages.')
-        or rule.endpoint.startswith('r0_viewer_api.')
-        for rule in rules
-    )
+    assert api_rules and all(rule.rule.startswith('/api/r0/') for rule in api_rules)
+    assert client.get('/api/backtest').status_code == 404
+    assert client.get('/api/timing/latest_signal').status_code == 404
+    assert client.post('/api/update_data').status_code == 405
+    assert client.post('/api/restart').status_code == 405
+    assert client.post('/api/live/record').status_code == 405
 
 
-def test_removed_us_strategy_list_never_enters_handler(client, monkeypatch):
-    monkeypatch.setattr(
-        state,
-        'ensure_us_timing_panel_loaded',
-        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError('network-capable loader called')),
-    )
-    response = client.get('/api/us_timing/strategy_list')
-    assert response.status_code == 404
-
-
-def test_all_r0_api_rules_are_get_only(app):
-    r0_rules = [rule for rule in app.url_map.iter_rules() if rule.rule.startswith('/api/r0/')]
-    assert r0_rules
-    for rule in r0_rules:
-        assert set(rule.methods) <= {'GET', 'HEAD', 'OPTIONS'}
-
-
-def test_cache_initializers_never_calculate_on_miss(monkeypatch):
-    saved = {
-        'backtest': dict(state.BACKTEST_CACHE),
-        'timing': dict(state.TIMING_CACHE),
-        'commodity': dict(state.COMMODITY_CACHE),
-        'hk': dict(state.HK_CACHE),
+def test_catalog_is_bounded_and_missing_variants_remain_visible(client):
+    sources = client.get('/api/r0/sources').get_json()
+    assert sources['bounded'] is True and sources['max_items'] == 16
+    assert [item['source_id'] for item in sources['items']][:3] == ['selection', 'a_share_timing', 'us_timing']
+    assert client.get('/api/r0/data-status').get_json()['sources'] == sources['items']
+    strategies = client.get('/api/r0/sources/a_share_timing/strategies?include=latest_snapshot').get_json()
+    assert strategies['total'] == 3
+    item = strategies['items'][0]
+    assert set(item['latest_snapshot']) == {
+        'variant_id', 'snapshot_id', 'cache_state', 'readable', 'freshness_state',
+        'freshness_reason', 'degradation', 'data_as_of', 'cache_generated_at',
+        'current_signal', 'signal_state', 'state_reason', 'snapshot_url',
+        'operation_id', 'status_url', 'recovery', 'error',
     }
-    state.BACKTEST_CACHE.clear()
-    state.TIMING_CACHE.clear()
-    state.COMMODITY_CACHE.clear()
-    state.HK_CACHE.clear()
-    monkeypatch.setattr(state, '_load_disk_cache', lambda: False)
-    monkeypatch.setattr(state, 'select_and_backtest', lambda *_a, **_k: (_ for _ in ()).throw(AssertionError('selection calculated')))
-    monkeypatch.setattr(state, 'run_timing_backtest', lambda *_a, **_k: (_ for _ in ()).throw(AssertionError('timing calculated')))
-    try:
-        state.init_cache()
-        state.init_timing_cache()
-        state.init_commodity_cache()
-        state.init_hk_cache()
-        assert not state.BACKTEST_CACHE
-        assert not state.TIMING_CACHE
-        assert not state.COMMODITY_CACHE
-        assert not state.HK_CACHE
-    finally:
-        state.BACKTEST_CACHE.update(saved['backtest'])
-        state.TIMING_CACHE.update(saved['timing'])
-        state.COMMODITY_CACHE.update(saved['commodity'])
-        state.HK_CACHE.update(saved['hk'])
+    assert item['latest_snapshot']['cache_state'] == 'missing'
+    variant = client.get(
+        '/api/r0/sources/a_share_timing/strategies/csi1000_timing/variants'
+    ).get_json()['items'][0]
+    missing = client.get(
+        '/api/r0/sources/a_share_timing/strategies/csi1000_timing/snapshots'
+        f'?variant_id={variant["variant_id"]}'
+    )
+    assert missing.status_code == 409
+    error = missing.get_json()
+    assert error['error'] == 'cache_miss' and error['recoverable_now'] is True
+    assert error['recovery_plan_id'] == variant['recovery_plan_id']
+    assert error['recovery_scopes'] == variant['recovery_scopes']
+    assert error['recovery_steps'] == variant['recovery_steps']
 
 
-def test_snapshot_api_keeps_legacy_evidence_unverified(client, monkeypatch):
-    frame = pd.DataFrame({
-        '交易日期': pd.to_datetime(['2026-01-31', '2026-02-28', '2026-03-31']),
-        '累积净值': [1.0, 1.05, 1.02],
-        '买入股票代码': [['000001'], ['000002'], ['000003']],
-    })
-    saved = dict(state.BACKTEST_CACHE)
-    state.BACKTEST_CACHE.clear()
-    state.BACKTEST_CACHE['original_ensemble'] = (frame, None)
-    monkeypatch.setattr(state, '_load_disk_cache', lambda: True)
-    try:
-        response = client.get('/api/r0/sources/selection/snapshots/original_ensemble')
-        assert response.status_code == 200
-        body = response.get_json()
-        assert body['available'] is True
-        assert body['evidence_status'] == 'unverified'
-        assert body['provenance'] == 'unknown'
-        assert body['data_as_of'] == '2026-03-31'
-        assert len(body['equity_curve']) == 3
-        assert body['metrics']['max_drawdown'] == '-2.86%'
-    finally:
-        state.BACKTEST_CACHE.clear()
-        state.BACKTEST_CACHE.update(saved)
+@pytest.mark.parametrize('target_state,expected', [
+    ({'cache_state': 'ready', 'readable': True, 'freshness_state': 'current', 'freshness_reason': None, 'degradation': None}, ('ready', None, None)),
+    ({'cache_state': 'data_stale', 'readable': True, 'freshness_state': 'stale', 'freshness_reason': {'code': 'data_old', 'detail': None}, 'degradation': None}, ('data_stale', 'data_old', None)),
+    ({'cache_state': 'degraded', 'readable': True, 'freshness_state': 'current', 'freshness_reason': None, 'degradation': {'code': 'optional_chan_missing', 'detail': None}}, ('degraded', None, 'optional_chan_missing')),
+    ({'cache_state': 'degraded', 'readable': True, 'freshness_state': 'stale', 'freshness_reason': {'code': 'data_old', 'detail': None}, 'degradation': {'code': 'optional_chan_missing', 'detail': None}}, ('degraded', 'data_old', 'optional_chan_missing')),
+])
+def test_four_readable_target_tuples_and_signal_warnings(app, client, target_state, expected):
+    _, variant = _publish(app, _timing_frame(target_state=target_state))
+    body = client.get('/api/r0/sources/a_share_timing/strategies?include=latest_snapshot').get_json()
+    card = next(item for item in body['items'] if item['strategy_id'] == 'csi1000_timing')['latest_snapshot']
+    assert (card['cache_state'], card['current_signal']['data_stale_warning'], card['current_signal']['degraded_reason']) == expected
+    assert (card['recovery'] is not None) == (target_state['degradation'] is not None)
+    variant_row = client.get(
+        '/api/r0/sources/a_share_timing/strategies/csi1000_timing/variants'
+    ).get_json()['items'][0]
+    assert variant_row['recoverable_now'] == (target_state['degradation'] is not None)
+    response = client.get(f'/api/r0/sources/a_share_timing/strategies/csi1000_timing/snapshots?variant_id={variant.variant_id}')
+    assert response.status_code == 200
 
 
-def test_missing_cache_stays_unavailable(client, monkeypatch):
-    saved = dict(state.COMMODITY_CACHE)
-    state.COMMODITY_CACHE.clear()
-    try:
-        response = client.get('/api/r0/sources/commodity/snapshots/gold_timing')
-        assert response.status_code == 200
-        body = response.get_json()
-        assert body['available'] is False
-        assert body['error'] == 'snapshot_unavailable'
-        assert body['evidence_status'] == 'unverified'
-        assert body['data_as_of'] == 'unknown'
-        assert body['equity_curve'] == []
-    finally:
-        state.COMMODITY_CACHE.update(saved)
+def test_summary_resources_are_full_paged_and_view_bound(app, client):
+    _, variant = _publish(app, _timing_frame(rows=5))
+    summary = client.get(f'/api/r0/sources/a_share_timing/strategies/csi1000_timing/snapshots?variant_id={variant.variant_id}').get_json()
+    base = f'/api/r0/sources/a_share_timing/strategies/csi1000_timing/snapshots/{summary["snapshot_id"]}'
+    first = client.get(f'{base}/series?view_id={summary["view_id"]}&kind=equity&window=full&resolution=day&limit=2').get_json()
+    assert first['total'] == 5 and len(first['items']) == 2 and first['next_cursor']
+    second = client.get(f'{base}/series?view_id={summary["view_id"]}&kind=equity&window=full&resolution=day&limit=2&cursor={first["next_cursor"]}').get_json()
+    assert second['items'][0]['date'] > first['items'][-1]['date']
+    wrong = client.get(f'{base}/signals?view_id={summary["view_id"]}&cursor={first["next_cursor"]}')
+    assert wrong.status_code == 400 and wrong.get_json()['error'] == 'invalid_cursor'
+    assert client.get(f'{base}/position?view_id=wrong').get_json()['error'] == 'invalid_view_id'
 
 
-def test_artifact_and_data_status_payloads_never_expose_host_paths(client):
-    artifacts = client.get('/api/r0/artifacts')
-    assert artifacts.status_code == 200
-    artifact_text = artifacts.get_data(as_text=True)
-    assert '/root/' not in artifact_text
-    assert '/home/' not in artifact_text
-    assert '/Users/' not in artifact_text
-    body = artifacts.get_json()
-    assert {item['kind'] for item in body['artifacts']} >= {'profile', 'sensitivity', 'holdout', 'cache'}
-    assert all(item['evidence_status'] == 'unverified' for item in body['artifacts'])
-    assert all(item['provenance'] == 'unknown' for item in body['artifacts'])
+def test_snapshot_change_rejects_old_path(app, client):
+    _, variant = _publish(app, _timing_frame(rows=3))
+    opened = client.get(f'/api/r0/sources/a_share_timing/strategies/csi1000_timing/snapshots?variant_id={variant.variant_id}').get_json()
+    _publish(app, _timing_frame(rows=4))
+    response = client.get(f'/api/r0/sources/a_share_timing/strategies/csi1000_timing/snapshots/{opened["snapshot_id"]}/configuration')
+    assert response.status_code == 409
+    assert response.get_json()['error'] == 'snapshot_changed'
 
-    status = client.get('/api/r0/data-status')
-    assert status.status_code == 200
-    status_text = status.get_data(as_text=True)
-    assert '/root/' not in status_text
-    assert '/home/' not in status_text
-    assert '/Users/' not in status_text
-    assert all(item['data_as_of'] == 'unknown' for item in status.get_json()['sources'])
+
+def test_viewer_gets_never_call_legacy_loaders_network_writes_or_builders(app, client, monkeypatch):
+    _, variant = _publish(app)
+    forbidden = lambda *_a, **_k: (_ for _ in ()).throw(AssertionError('side effect called'))
+    for name in ('init_cache', 'init_timing_cache', 'init_us_timing_cache', '_load_disk_cache',
+                 '_run_data_update', '_run_index_data_update', '_run_aux_data_update',
+                 '_run_factor_update', 'run_backtest_fresh', 'run_timing_backtest_fresh'):
+        monkeypatch.setattr(state, name, forbidden)
+    summary = client.get(f'/api/r0/sources/a_share_timing/strategies/csi1000_timing/snapshots?variant_id={variant.variant_id}').get_json()
+    base = f'/api/r0/sources/a_share_timing/strategies/csi1000_timing/snapshots/{summary["snapshot_id"]}'
+    urls = [
+        '/api/r0/sources', '/api/r0/sources/a_share_timing/strategies?include=latest_snapshot',
+        '/api/r0/sources/a_share_timing/strategies/csi1000_timing/variants',
+        f'{base}/series?view_id={summary["view_id"]}&kind=equity&window=full&resolution=day',
+        f'{base}/signals?view_id={summary["view_id"]}', f'{base}/position?view_id={summary["view_id"]}',
+        f'{base}/interval-windows?view_id={summary["view_id"]}', f'{base}/trades?view_id={summary["view_id"]}',
+        f'{base}/fees?view_id={summary["view_id"]}', f'{base}/configuration',
+        '/api/r0/legacy-artifacts', '/api/r0/data-status', '/api/r0/data-check?scope=index',
+        '/api/r0/manual-records/capabilities',
+    ]
+    assert all(client.get(url).status_code == 200 for url in urls)
+
+
+def test_canonical_api_rejects_legacy_flags_and_unknown_strategy(client):
+    assert client.get('/api/r0/sources/a_share_timing/strategies/csi1000_timing/variant-lookup?force=1').get_json()['error'] == 'invalid_params'
+    assert client.get('/api/r0/sources/a_share_timing/strategies/not-here/variants').get_json()['error'] == 'strategy_not_found'

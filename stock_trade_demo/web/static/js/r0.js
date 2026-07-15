@@ -3,31 +3,23 @@
 
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
+  const state = { snapshot: null, loadedTabs: new Set(), recoveryOperation: null, updateOperation: null };
 
-  function text(node, value) {
-    if (node) node.textContent = value == null || value === '' ? 'unknown' : String(value);
+  function setText(node, value, fallback = 'unknown') {
+    if (node) node.textContent = value == null || value === '' ? fallback : String(value);
   }
 
-  function formatBytes(value) {
-    if (value == null || Number.isNaN(Number(value))) return 'unknown';
-    const bytes = Number(value);
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-  }
-
-  function formatCell(value) {
-    if (value == null || value === '') return 'unknown';
-    if (typeof value === 'object') {
-      const rendered = JSON.stringify(value);
-      return rendered.length > 140 ? `${rendered.slice(0, 137)}…` : rendered;
-    }
+  function format(value) {
+    if (value == null || value === '') return 'not stored/unknown';
     if (typeof value === 'number') return Number.isInteger(value) ? String(value) : value.toFixed(4);
+    if (typeof value === 'object') return JSON.stringify(value);
     return String(value);
   }
 
-  async function getJson(url) {
-    const response = await fetch(url, { headers: { Accept: 'application/json' } });
+  async function requestJson(url, options = {}) {
+    const headers = { Accept: 'application/json', ...(options.headers || {}) };
+    if (options.body != null) headers['Content-Type'] = 'application/json';
+    const response = await fetch(url, { ...options, headers });
     let body = {};
     try { body = await response.json(); } catch (_) { body = {}; }
     if (!response.ok) {
@@ -39,13 +31,50 @@
     return body;
   }
 
+  async function fetchAllPages(url) {
+    const first = await requestJson(url);
+    if (!Array.isArray(first.items) || !first.next_cursor) return first;
+    const items = [...first.items]; let cursor = first.next_cursor;
+    while (cursor) {
+      const nextUrl = new URL(url, window.location.origin);
+      nextUrl.searchParams.set('cursor', cursor);
+      nextUrl.searchParams.set('limit', '100');
+      const page = await requestJson(`${nextUrl.pathname}${nextUrl.search}`);
+      items.push(...(page.items || [])); cursor = page.next_cursor;
+      if (items.length > Number(first.total)) throw new Error('Paged collection exceeded its declared total.');
+    }
+    if (items.length !== Number(first.total)) throw new Error('Paged collection did not match its declared total.');
+    return { ...first, items, next_cursor: null };
+  }
+
+  function confirmAction(message, acceptLabel = 'Confirm') {
+    const dialog = $('#confirm-dialog');
+    if (!dialog || typeof dialog.showModal !== 'function') return Promise.resolve(false);
+    const previous = document.activeElement; const accept = $('#confirm-dialog-accept');
+    setText($('#confirm-dialog-message'), message); setText(accept, acceptLabel);
+    dialog.returnValue = '';
+    return new Promise((resolve) => {
+      dialog.addEventListener('close', () => {
+        previous?.focus?.(); resolve(dialog.returnValue === 'confirm');
+      }, { once: true });
+      dialog.showModal(); accept.focus();
+    });
+  }
+
+  function showMessage(node, message, danger = false) {
+    if (!node) return;
+    setText(node, message);
+    node.className = `notice${danger ? ' danger' : ''}`;
+    node.hidden = false;
+  }
+
   function initNavigation() {
     const button = $('[data-menu-button]');
     const sidebar = $('[data-sidebar]');
     if (!button || !sidebar) return;
     button.addEventListener('click', () => {
       const open = sidebar.classList.toggle('open');
-      button.setAttribute('aria-expanded', open ? 'true' : 'false');
+      button.setAttribute('aria-expanded', String(open));
     });
     document.addEventListener('keydown', (event) => {
       if (event.key === 'Escape' && sidebar.classList.contains('open')) {
@@ -56,352 +85,186 @@
     });
   }
 
-  function initTabs() {
-    const tabs = $$('[role="tab"]');
-    tabs.forEach((tab) => {
-      tab.addEventListener('click', () => {
-        tabs.forEach((item) => item.setAttribute('aria-selected', item === tab ? 'true' : 'false'));
-        $$('[role="tabpanel"]').forEach((panel) => {
-          panel.hidden = panel.id !== tab.getAttribute('aria-controls');
-        });
-      });
-    });
-  }
-
-  function drawCurve(container, points) {
-    container.replaceChildren();
-    if (!Array.isArray(points) || points.length < 2) {
-      const empty = document.createElement('div');
-      empty.className = 'chart-empty';
-      empty.textContent = 'No cached curve is available.';
-      container.appendChild(empty);
-      return;
+  function renderTable(root, rows, preferred = [], actions = null) {
+    root.replaceChildren();
+    if (!Array.isArray(rows) || !rows.length) {
+      const empty = document.createElement('div'); empty.className = 'empty'; empty.textContent = 'No stored rows.'; root.appendChild(empty); return;
     }
-
-    const width = 960;
-    const height = 340;
-    const pad = { top: 24, right: 22, bottom: 42, left: 58 };
-    const values = points.map((point) => Number(point.value)).filter(Number.isFinite);
-    if (values.length < 2) return drawCurve(container, []);
-    let min = Math.min(...values);
-    let max = Math.max(...values);
-    if (min === max) { min -= 0.05; max += 0.05; }
-
-    const ns = 'http://www.w3.org/2000/svg';
-    const svg = document.createElementNS(ns, 'svg');
-    svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
-    svg.setAttribute('class', 'chart-svg');
-    svg.setAttribute('role', 'img');
-    svg.setAttribute('aria-label', `Cached curve from ${points[0].date} to ${points[points.length - 1].date}`);
-
-    const x = (index) => pad.left + (index / (points.length - 1)) * (width - pad.left - pad.right);
-    const y = (value) => pad.top + (1 - (value - min) / (max - min)) * (height - pad.top - pad.bottom);
-
-    for (let lineIndex = 0; lineIndex <= 4; lineIndex += 1) {
-      const ratio = lineIndex / 4;
-      const yPos = pad.top + ratio * (height - pad.top - pad.bottom);
-      const line = document.createElementNS(ns, 'line');
-      line.setAttribute('x1', String(pad.left));
-      line.setAttribute('x2', String(width - pad.right));
-      line.setAttribute('y1', String(yPos));
-      line.setAttribute('y2', String(yPos));
-      line.setAttribute('stroke', '#e3e8ed');
-      line.setAttribute('stroke-width', '1');
-      svg.appendChild(line);
-
-      const label = document.createElementNS(ns, 'text');
-      label.setAttribute('x', String(pad.left - 10));
-      label.setAttribute('y', String(yPos + 4));
-      label.setAttribute('text-anchor', 'end');
-      label.setAttribute('fill', '#657386');
-      label.setAttribute('font-size', '11');
-      label.textContent = (max - ratio * (max - min)).toFixed(2);
-      svg.appendChild(label);
-    }
-
-    const polygon = document.createElementNS(ns, 'polygon');
-    const linePoints = points.map((point, index) => `${x(index)},${y(Number(point.value))}`).join(' ');
-    polygon.setAttribute('points', `${pad.left},${height - pad.bottom} ${linePoints} ${width - pad.right},${height - pad.bottom}`);
-    polygon.setAttribute('fill', 'rgba(29,109,98,0.10)');
-    svg.appendChild(polygon);
-
-    const polyline = document.createElementNS(ns, 'polyline');
-    polyline.setAttribute('points', linePoints);
-    polyline.setAttribute('fill', 'none');
-    polyline.setAttribute('stroke', '#1d6d62');
-    polyline.setAttribute('stroke-width', '2.5');
-    polyline.setAttribute('stroke-linejoin', 'round');
-    svg.appendChild(polyline);
-
-    [0, points.length - 1].forEach((index) => {
-      const label = document.createElementNS(ns, 'text');
-      label.setAttribute('x', String(x(index)));
-      label.setAttribute('y', String(height - 14));
-      label.setAttribute('text-anchor', index === 0 ? 'start' : 'end');
-      label.setAttribute('fill', '#657386');
-      label.setAttribute('font-size', '11');
-      label.textContent = points[index].date;
-      svg.appendChild(label);
-    });
-    container.appendChild(svg);
-  }
-
-  function renderTable(container, rows, preferredColumns = []) {
-    container.replaceChildren();
-    if (!Array.isArray(rows) || rows.length === 0) {
-      const empty = document.createElement('div');
-      empty.className = 'empty';
-      empty.textContent = 'No cached rows are available.';
-      container.appendChild(empty);
-      return;
-    }
-    const available = Array.from(new Set(rows.flatMap((row) => Object.keys(row || {}))));
-    const columns = [
-      ...preferredColumns.filter((column) => available.includes(column)),
-      ...available.filter((column) => !preferredColumns.includes(column)),
-    ].slice(0, 8);
-
-    const wrap = document.createElement('div');
-    wrap.className = 'table-wrap';
-    const table = document.createElement('table');
-    const head = document.createElement('thead');
-    const headRow = document.createElement('tr');
-    columns.forEach((column) => {
-      const th = document.createElement('th');
-      th.scope = 'col';
-      th.textContent = column.replaceAll('_', ' ');
-      headRow.appendChild(th);
-    });
-    head.appendChild(headRow);
-    table.appendChild(head);
-
-    const body = document.createElement('tbody');
+    const columns = [...preferred, ...Object.keys(rows[0]).filter((key) => !preferred.includes(key))].filter((key, index, all) => all.indexOf(key) === index);
+    const wrap = document.createElement('div'); wrap.className = 'table-wrap';
+    const table = document.createElement('table'); const head = document.createElement('thead'); const hr = document.createElement('tr');
+    columns.forEach((column) => { const th = document.createElement('th'); th.scope = 'col'; th.textContent = column.replaceAll('_', ' '); hr.appendChild(th); });
+    if (actions) { const th = document.createElement('th'); th.scope = 'col'; th.textContent = 'Actions'; hr.appendChild(th); }
+    head.appendChild(hr); table.appendChild(head); const body = document.createElement('tbody');
     rows.forEach((row) => {
       const tr = document.createElement('tr');
-      columns.forEach((column) => {
-        const td = document.createElement('td');
-        td.textContent = formatCell(row[column]);
-        tr.appendChild(td);
-      });
+      columns.forEach((column) => { const td = document.createElement('td'); td.dataset.label = column.replaceAll('_', ' '); td.textContent = format(row[column]); tr.appendChild(td); });
+      if (actions) { const td = document.createElement('td'); td.dataset.label = 'Actions'; actions(row, td); tr.appendChild(td); }
       body.appendChild(tr);
     });
-    table.appendChild(body);
-    wrap.appendChild(table);
-    container.appendChild(wrap);
+    table.appendChild(body); wrap.appendChild(table); root.appendChild(wrap);
   }
 
-  function renderConfiguration(container, rows) {
-    container.replaceChildren();
-    if (!Array.isArray(rows) || rows.length === 0) {
-      const empty = document.createElement('div');
-      empty.className = 'empty';
-      empty.textContent = 'Configuration metadata is unavailable.';
-      container.appendChild(empty);
-      return;
-    }
-    const list = document.createElement('div');
-    list.className = 'config-list';
-    rows.forEach((row) => {
-      const item = document.createElement('div');
-      item.className = 'config-row';
-      const label = document.createElement('strong');
-      label.textContent = row.label || row.key || 'unknown';
-      const value = document.createElement('code');
-      value.textContent = formatCell(row.value);
-      const description = document.createElement('span');
-      description.textContent = row.description || 'No description is stored.';
-      item.append(label, value, description);
-      list.appendChild(item);
-    });
-    container.appendChild(list);
-  }
-
-  async function initSnapshotPage() {
-    const configNode = $('#snapshot-config');
-    if (!configNode) return;
-    const config = JSON.parse(configNode.textContent);
-    const select = $('#strategy-select');
-    const status = $('#snapshot-status');
-    const date = $('#snapshot-date');
-    const metricsRoot = $('#snapshot-metrics');
-    const chart = $('#snapshot-chart');
-
-    async function loadSnapshot(strategyId) {
-      text(status, 'loading');
-      status.className = 'badge warning';
-      try {
-        const payload = await getJson(`/api/r0/sources/${encodeURIComponent(config.id)}/snapshots/${encodeURIComponent(strategyId)}`);
-        text(status, payload.available ? (payload.evidence_status || 'unverified') : 'unavailable');
-        status.className = payload.available ? 'badge warning' : 'badge danger';
-        text(date, payload.data_as_of || 'unknown');
-        const metricMap = [
-          ['Cumulative value', payload.metrics?.cumulative_value],
-          ['Total return', payload.metrics?.total_return],
-          ['Max drawdown', payload.metrics?.max_drawdown],
-          ['Observations', payload.metrics?.observations],
-        ];
-        $$('.metric-card', metricsRoot).forEach((card, index) => {
-          text($('span', card), metricMap[index][0]);
-          text($('strong', card), metricMap[index][1]);
-        });
-        drawCurve(chart, payload.equity_curve || []);
-        renderTable($('#holdings-table'), payload.holdings || [], ['date', 'code', 'name', 'position_label', 'target_exposure', 'holding_units', 'holding_value']);
-        renderTable($('#trades-table'), payload.trades || [], ['date', 'action', 'target_exposure', 'trade_price', 'quantity', 'fee_amount', 'nav']);
-        renderConfiguration($('#configuration-list'), payload.configuration || []);
-        const errorBox = $('#snapshot-error');
-        if (payload.available) {
-          errorBox.hidden = true;
-        } else {
-          text(errorBox, payload.message || 'No prebuilt snapshot is available.');
-          errorBox.hidden = false;
-        }
-      } catch (error) {
-        text(status, 'unavailable');
-        status.className = 'badge danger';
-        text(date, 'unknown');
-        $$('.metric-card strong', metricsRoot).forEach((node) => text(node, 'unknown'));
-        drawCurve(chart, []);
-        renderTable($('#holdings-table'), []);
-        renderTable($('#trades-table'), []);
-        renderConfiguration($('#configuration-list'), []);
-        const errorBox = $('#snapshot-error');
-        text(errorBox, error.message);
-        errorBox.hidden = false;
-      }
-    }
-
-    try {
-      const payload = await getJson(`/api/r0/sources/${encodeURIComponent(config.id)}/strategies`);
-      select.replaceChildren();
-      (payload.strategies || []).forEach((strategy) => {
-        const option = document.createElement('option');
-        option.value = strategy.id;
-        const storedName = strategy.name || '';
-        const label = /^[\x20-\x7e]+$/.test(storedName) ? storedName : strategy.id;
-        option.textContent = `${label}${strategy.available ? '' : ' (unavailable)'}`;
-        select.appendChild(option);
-      });
-      const preferred = (payload.strategies || []).find((item) => item.id === config.default_strategy);
-      select.value = preferred ? preferred.id : select.options[0]?.value || '';
-      select.disabled = select.options.length <= 1;
-      if (select.value) await loadSnapshot(select.value);
-      else throw new Error('No fixed strategy metadata is available.');
-    } catch (error) {
-      const errorBox = $('#snapshot-error');
-      text(errorBox, error.message);
-      errorBox.hidden = false;
-      text(status, 'unavailable');
-    }
-    select.addEventListener('change', () => loadSnapshot(select.value));
-  }
-
-  async function initLegacyPage() {
-    const root = $('#artifact-grid');
-    if (!root) return;
-    try {
-      const payload = await getJson('/api/r0/artifacts');
-      root.replaceChildren();
-      (payload.artifacts || []).forEach((artifact) => {
-        const card = document.createElement('article');
-        card.className = 'card artifact-card';
-        const kicker = document.createElement('div');
-        kicker.className = 'card-kicker';
-        kicker.textContent = artifact.kind;
-        const title = document.createElement('h3');
-        title.textContent = artifact.label;
-        const file = document.createElement('p');
-        file.textContent = artifact.file_name;
-        const tags = document.createElement('div');
-        tags.className = 'artifact-tags';
-        [artifact.evidence_status, artifact.provenance, artifact.available ? formatBytes(artifact.size_bytes) : 'unavailable'].forEach((value, index) => {
-          const badge = document.createElement('span');
-          badge.className = `badge ${index < 2 ? 'warning' : ''}`;
-          badge.textContent = value;
-          tags.appendChild(badge);
-        });
-        const actions = document.createElement('div');
-        actions.className = 'card-actions';
-        if (artifact.download_url) {
-          const link = document.createElement('a');
-          link.className = 'button';
-          link.href = artifact.download_url;
-          link.textContent = 'Download checked file';
-          actions.appendChild(link);
-        } else {
-          const disabled = document.createElement('span');
-          disabled.className = 'button';
-          disabled.setAttribute('aria-disabled', 'true');
-          disabled.textContent = 'No public download';
-          actions.appendChild(disabled);
-        }
-        card.append(kicker, title, file, tags, actions);
-        root.appendChild(card);
-      });
-    } catch (error) {
-      root.textContent = error.message;
-      root.className = 'empty';
-    }
-  }
-
-  function buildStatusRows(root, sources) {
+  function drawCurve(root, points) {
     root.replaceChildren();
-    sources.forEach((source) => {
-      const row = document.createElement('div');
-      row.className = 'status-row';
-      const title = document.createElement('strong');
-      title.textContent = source.label;
-      const available = document.createElement('span');
-      available.textContent = source.available ? 'file present' : 'unavailable';
-      const dataDate = document.createElement('span');
-      dataDate.textContent = `data as of: ${source.data_as_of}`;
-      const vintage = document.createElement('span');
-      vintage.textContent = `vintage: ${source.source_vintage}`;
-      const evidence = document.createElement('span');
-      evidence.textContent = source.evidence_status;
-      row.append(title, available, dataDate, vintage, evidence);
-      root.appendChild(row);
+    if (!points || points.length < 2) { const empty = document.createElement('div'); empty.className = 'chart-empty'; empty.textContent = 'No stored curve.'; root.appendChild(empty); return; }
+    const sampled = points.length <= 480 ? points : Array.from({ length: 480 }, (_, index) => points[Math.round(index * (points.length - 1) / 479)]);
+    const values = sampled.map((item) => Number(item.value));
+    if (values.some((value) => !Number.isFinite(value))) { drawCurve(root, []); return; }
+    const width = 960; const height = 320; const pad = 44; const min = Math.min(...values); const max = Math.max(...values); const span = max - min || 1;
+    const ns = 'http://www.w3.org/2000/svg'; const svg = document.createElementNS(ns, 'svg'); svg.setAttribute('viewBox', `0 0 ${width} ${height}`); svg.classList.add('chart-svg'); svg.setAttribute('role', 'img'); svg.setAttribute('aria-label', `Published curve ${sampled[0].date} through ${sampled.at(-1).date}`);
+    const coords = sampled.map((item, index) => `${pad + index / (sampled.length - 1) * (width - 2 * pad)},${pad + (1 - (Number(item.value) - min) / span) * (height - 2 * pad)}`).join(' ');
+    const line = document.createElementNS(ns, 'polyline'); line.setAttribute('points', coords); line.setAttribute('fill', 'none'); line.setAttribute('stroke', '#1d6d62'); line.setAttribute('stroke-width', '3'); svg.appendChild(line); root.appendChild(svg);
+  }
+
+  function initTabs(onActivate) {
+    const tabs = $$('[role="tab"]');
+    tabs.forEach((tab, index) => {
+      const activate = () => {
+        if (tab.hidden) return;
+        tabs.forEach((item) => { const selected = item === tab; item.setAttribute('aria-selected', String(selected)); item.tabIndex = selected ? 0 : -1; $(`#${item.getAttribute('aria-controls')}`).hidden = !selected; });
+        onActivate?.(tab.dataset.resource);
+      };
+      tab.addEventListener('click', activate);
+      tab.addEventListener('keydown', (event) => {
+        if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+        event.preventDefault(); const visible = tabs.filter((item) => !item.hidden); const current = visible.indexOf(tab); let next = current;
+        if (event.key === 'ArrowRight') next = (current + 1) % visible.length;
+        if (event.key === 'ArrowLeft') next = (current - 1 + visible.length) % visible.length;
+        if (event.key === 'Home') next = 0; if (event.key === 'End') next = visible.length - 1;
+        visible[next].focus(); visible[next].click();
+      });
     });
   }
 
-  async function initDataStatusPage() {
-    const root = $('#data-status-list');
-    if (!root) return;
-    try {
-      const payload = await getJson('/api/r0/data-status');
-      text($('#status-checked-at'), payload.checked_at);
-      buildStatusRows(root, payload.sources || []);
-    } catch (error) {
-      root.textContent = error.message;
-      root.className = 'empty';
-    }
+  function subtractMonths(day, months) {
+    if (!day) return '';
+    const value = new Date(`${day}T00:00:00Z`); const desired = value.getUTCDate(); value.setUTCDate(1); value.setUTCMonth(value.getUTCMonth() - months); value.setUTCDate(Math.min(desired, new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth() + 1, 0)).getUTCDate())); return value.toISOString().slice(0, 10);
   }
 
-  async function initManualRecordsPage() {
-    const root = $('#manual-records-table');
-    if (!root) return;
-    try {
-      const payload = await getJson('/api/r0/manual-records');
-      if (!payload.available) {
-        const empty = document.createElement('div');
-        empty.className = 'empty';
-        empty.textContent = payload.message || 'Manual record storage is unavailable.';
-        root.replaceChildren(empty);
-        text($('#manual-record-count'), payload.evidence_status || 'unverified');
-        return;
-      }
-      renderTable(root, payload.records || [], ['date', 'strategy', 'signal_target', 'actual_position', 'exec_price', 'shares', 'notes', 'created_at']);
-      text($('#manual-record-count'), (payload.records || []).length);
-    } catch (error) {
-      root.textContent = error.message;
-      root.className = 'empty';
+  async function initSnapshot() {
+    const configNode = $('#snapshot-config'); if (!configNode) return;
+    const config = JSON.parse(configNode.textContent); const sourceSelect = $('#source-select'); const strategySelect = $('#strategy-select'); const variantSelect = $('#variant-select'); const message = $('#snapshot-message');
+    let sources = []; let strategies = []; let variants = [];
+
+    async function loadSources() {
+      const payload = await requestJson('/api/r0/sources'); sources = payload.items || []; sourceSelect.replaceChildren();
+      sources.filter((item) => !item.related_only || item.source_id === config.source_id).forEach((item) => { const option = document.createElement('option'); option.value = item.source_id; option.textContent = item.display_name; sourceSelect.appendChild(option); });
+      sourceSelect.value = sources.some((item) => item.source_id === config.source_id) ? config.source_id : 'selection';
+      if (config.initial_range === '6m') { const source = sources.find((item) => item.source_id === sourceSelect.value); if (source?.data_max_date) $('#start-date').value = subtractMonths(source.data_max_date, 6); }
+      await loadStrategies();
     }
+    async function loadStrategies() {
+      const payload = await requestJson(`/api/r0/sources/${encodeURIComponent(sourceSelect.value)}/strategies`); strategies = payload.items || []; strategySelect.replaceChildren();
+      strategies.forEach((item) => { const option = document.createElement('option'); option.value = item.strategy_id; option.textContent = item.display_name; strategySelect.appendChild(option); });
+      strategySelect.value = strategies.some((item) => item.strategy_id === config.strategy_id) ? config.strategy_id : strategies[0]?.strategy_id || '';
+      $('#benchmark-select').value = ['selection', 'a_share_timing'].includes(sourceSelect.value) ? 'csi1000' : 'etf';
+      await loadVariants();
+    }
+    async function loadVariants() {
+      const payload = await requestJson(`/api/r0/sources/${encodeURIComponent(sourceSelect.value)}/strategies/${encodeURIComponent(strategySelect.value)}/variants`); variants = payload.items || []; variantSelect.replaceChildren();
+      variants.forEach((item) => { const option = document.createElement('option'); option.value = item.variant_id; option.textContent = `${item.default ? 'Default · ' : ''}${JSON.stringify(item.canonical_params)} · ${item.cache_state}`; option.dataset.state = JSON.stringify(item); variantSelect.appendChild(option); });
+      const preferred = variants.find((item) => item.default) || variants[0]; if (preferred) variantSelect.value = preferred.variant_id;
+      renderVariantState(preferred); await openSnapshot();
+    }
+    function renderVariantState(variant) {
+      if (!variant) return; setText($('#snapshot-state'), variant.cache_state); setText($('#snapshot-freshness'), variant.freshness_state);
+      const notice = $('#recovery-notice'); if (variant.readable) { notice.hidden = true; return; }
+      notice.hidden = false; notice.setAttribute('aria-busy', variant.cache_state === 'recovering' ? 'true' : 'false');
+      setText($('#recovery-context'), `${variant.source_id} / ${variant.strategy_id} / ${variant.variant_id}; blocker=${variant.blocker_code || 'none'}`);
+      setText($('#recovery-plan'), variant.recovery_steps ? `${variant.recovery_steps.map((step) => step.label).join(' → ')}; ETA ${variant.eta_seconds || 'unknown'}s` : 'No fixed online recovery plan.');
+      $('#recover-cache').hidden = !variant.recovery_supported || !variant.recoverable_now; $('#recover-cache').disabled = variant.cache_state === 'recovering';
+      if (variant.operation_id) pollOperation(variant.operation_id, true);
+    }
+    function warnings(payload) {
+      const root = $('#snapshot-warnings'); root.replaceChildren();
+      if (payload.current_signal?.data_stale_warning) { const node = document.createElement('div'); node.className = 'notice'; node.textContent = `Stale data: ${payload.current_signal.data_stale_warning}. Update through Data Status.`; root.appendChild(node); }
+      if (payload.current_signal?.degraded_reason) { const node = document.createElement('div'); node.className = 'notice'; node.textContent = `Degraded: ${payload.current_signal.degraded_reason}.`; root.appendChild(node); }
+    }
+    function syncTabs(capabilities) {
+      const required = { series: 'series', signals: 'signals', holdings: 'holdings', trades: 'trades', factors: 'factors', configuration: 'configuration' };
+      const visible = [];
+      $$('[role="tab"]').forEach((tab) => {
+        const supported = capabilities.includes(required[tab.dataset.resource]);
+        tab.hidden = !supported; tab.tabIndex = -1; tab.setAttribute('aria-selected', 'false');
+        const panel = $(`#${tab.getAttribute('aria-controls')}`); panel.hidden = true;
+        if (supported) visible.push(tab);
+      });
+      const first = sourceSelect.value === 'selection_factor' ? visible.find((tab) => tab.dataset.resource === 'factors') : visible[0];
+      if (first) { first.hidden = false; first.tabIndex = 0; first.setAttribute('aria-selected', 'true'); $(`#${first.getAttribute('aria-controls')}`).hidden = false; }
+    }
+    async function openSnapshot() {
+      if (!variantSelect.value) return; state.loadedTabs.clear(); state.snapshot = null; const params = new URLSearchParams({ variant_id: variantSelect.value, benchmark: $('#benchmark-select').value, resolution: $('#resolution-select').value });
+      if ($('#start-date').value) params.set('start', $('#start-date').value); if ($('#end-date').value) params.set('end', $('#end-date').value);
+      try {
+        const payload = await requestJson(`/api/r0/sources/${encodeURIComponent(sourceSelect.value)}/strategies/${encodeURIComponent(strategySelect.value)}/snapshots?${params}`); state.snapshot = payload; message.hidden = true; $('#recovery-notice').hidden = true;
+        setText($('#snapshot-state'), 'readable'); setText($('#snapshot-freshness'), payload.current_signal?.data_stale_warning ? 'stale' : 'current'); setText($('#snapshot-date'), payload.data_as_of);
+        const values = [payload.metrics?.cumulative_return, payload.metrics?.total_return_pct, payload.metrics?.max_drawdown, payload.counts?.total_periods]; $$('#snapshot-metrics strong').forEach((node, index) => setText(node, format(values[index]))); warnings(payload);
+        const strategy = strategies.find((item) => item.strategy_id === payload.strategy_id); const capabilities = strategy?.resource_capabilities || [];
+        syncTabs(capabilities); localStorage.setItem('r0-last-snapshot', JSON.stringify({ source_id: payload.source_id, strategy_id: payload.strategy_id, snapshot_id: payload.snapshot_id }));
+        await loadResource($('[role="tab"][aria-selected="true"]:not([hidden])')?.dataset.resource || 'configuration');
+      } catch (error) {
+        showMessage(message, `${error.body?.error || 'snapshot_error'}: ${error.message}`, true); const variant = variants.find((item) => item.variant_id === variantSelect.value); renderVariantState(variant);
+      }
+    }
+    async function loadResource(resource) {
+      if (!state.snapshot || state.loadedTabs.has(resource)) return; const s = state.snapshot; const base = `/api/r0/sources/${encodeURIComponent(s.source_id)}/strategies/${encodeURIComponent(s.strategy_id)}/snapshots/${encodeURIComponent(s.snapshot_id)}`; const view = encodeURIComponent(s.view_id);
+      try {
+        if (resource === 'series') { const payload = await fetchAllPages(`${base}/series?view_id=${view}&kind=equity&window=full&resolution=${encodeURIComponent(s.canonical_view.resolution)}&limit=100`); drawCurve($('#snapshot-chart'), payload.items); renderTable($('#curve-table'), payload.items, ['date', 'value', 'return']); }
+        if (resource === 'signals' && strategies.find((item) => item.strategy_id === s.strategy_id)?.resource_capabilities.includes('signals')) { const payload = await fetchAllPages(`${base}/signals?view_id=${view}&event=all&limit=100`); renderTable($('#signals-table'), payload.items, ['date', 'action', 'position', 'reason_summary', 'target_exposure']); }
+        if (resource === 'trades' && strategies.find((item) => item.strategy_id === s.strategy_id)?.resource_capabilities.includes('trades')) { const payload = await fetchAllPages(`${base}/trades?view_id=${view}&projection=detail&limit=100`); renderTable($('#trades-table'), payload.items, ['date', 'action', 'etf_code', 'trade_price', 'cost_price', 'latest_price', 'quantity', 'trade_amount', 'fee_amount', 'commission', 'stamp', 'transfer', 'slippage_cost', 'blocked_by_limit', 'limit_delays', 'holding_value', 'realized_pnl', 'realized_pnl_pct', 'nav']); }
+        if (resource === 'holdings' && s.source_id === 'selection') { const periods = await fetchAllPages(`${base}/holding-periods?view_id=${view}&window=full&limit=100`); const rows = []; for (const period of periods.items || []) { const payload = await fetchAllPages(`${period.stocks_url}&limit=100`); rows.push(...payload.items.map((item) => ({ period_id: period.period_id, ...item }))); } renderTable($('#holdings-table'), rows, ['period_id', 'code', 'name', 'market_label', 'industry_l2', 'factor_score', 'rank', 'selection_reason_summary', 'weight', 'return', 'pnl']); }
+        if (resource === 'factors') { const root = $('#factors-table'); if (s.source_id === 'selection_factor') { const kind = s.strategy_id === 'sector_heat' ? 'sector_heat' : 'single_factor'; const payload = await fetchAllPages(`${base}/factors?view_id=${view}&kind=${kind}&limit=100`); renderTable(root, payload.items); } else { const metadata = await requestJson(`${base}/factors?view_id=${view}&kind=metadata`); const overview = await fetchAllPages(`${base}/factors?view_id=${view}&kind=overview&limit=100`); const pre = document.createElement('pre'); pre.className = 'plan-box'; pre.textContent = JSON.stringify(metadata.metadata, null, 2); const tableRoot = document.createElement('div'); renderTable(tableRoot, overview.items); const links = document.createElement('div'); links.className = 'card-actions'; (s.related_snapshot_links || []).forEach((link) => { const a = document.createElement('a'); a.className = 'button'; a.href = `/snapshots?source_id=${encodeURIComponent(link.source_id)}&strategy_id=${encodeURIComponent(link.strategy_id)}&initial_range=full`; a.textContent = `${link.strategy_id}: ${link.cache_state}`; links.appendChild(a); }); root.replaceChildren(pre, tableRoot, links); } }
+        if (resource === 'configuration') { const payload = await requestJson(`${base}/configuration`); const pre = document.createElement('pre'); pre.className = 'plan-box'; pre.textContent = JSON.stringify(payload, null, 2); $('#configuration-list').replaceChildren(pre); }
+        state.loadedTabs.add(resource);
+      } catch (error) { const root = $(`#${resource}-table`) || $('#snapshot-message'); showMessage(root, error.message, true); }
+    }
+    async function pollOperation(operationId, recovery = false) {
+      state.recoveryOperation = operationId; const notice = $('#recovery-notice'); notice.hidden = false; notice.setAttribute('aria-busy', 'true');
+      try { const operation = await requestJson(`/api/r0/actions/${encodeURIComponent(operationId)}`); setText($('#recovery-plan'), operation.steps.map((step) => `${step.step_id}:${step.status}`).join(' · ')); if (['pending', 'running'].includes(operation.status)) { window.setTimeout(() => pollOperation(operationId, recovery), 1000); return; } notice.setAttribute('aria-busy', 'false'); if (operation.status === 'done') { await loadVariants(); } else { $('#retry-recovery').hidden = false; showMessage(message, `${operation.status}: ${operation.error_code || 'operation failed'}`, true); } } catch (error) { notice.setAttribute('aria-busy', 'false'); showMessage(message, `Operation status unknown: ${error.message}`, true); }
+    }
+    $('#recover-cache').addEventListener('click', async () => { const variant = variants.find((item) => item.variant_id === variantSelect.value); if (!variant || $('#recover-cache').disabled) return; $('#recover-cache').disabled = true; $('#recovery-notice').setAttribute('aria-busy', 'true'); try { const operation = await requestJson('/api/r0/actions/cache-recover', { method: 'POST', body: JSON.stringify({ source_id: variant.source_id, strategy_id: variant.strategy_id, variant_id: variant.variant_id }) }); await pollOperation(operation.operation_id, true); } catch (error) { $('#recover-cache').disabled = false; showMessage(message, error.message, true); } });
+    $('#retry-recovery').addEventListener('click', async () => { if (!state.recoveryOperation) return; const operation = await requestJson(`/api/r0/actions/${state.recoveryOperation}/retry`, { method: 'POST' }); $('#retry-recovery').hidden = true; pollOperation(operation.operation_id, true); });
+    sourceSelect.addEventListener('change', loadStrategies); strategySelect.addEventListener('change', loadVariants); variantSelect.addEventListener('change', () => renderVariantState(variants.find((item) => item.variant_id === variantSelect.value))); $('#open-snapshot').addEventListener('click', openSnapshot); initTabs(loadResource);
+    try { await loadSources(); } catch (error) { showMessage(message, error.message, true); }
+  }
+
+  async function initLegacy() {
+    const root = $('#artifact-grid'); if (!root) return;
+    try { const payload = await requestJson('/api/r0/legacy-artifacts'); root.replaceChildren(); payload.items.forEach((artifact) => { const card = document.createElement('article'); card.className = 'card artifact-card'; const title = document.createElement('h3'); title.textContent = artifact.label; const meta = document.createElement('p'); meta.textContent = `${artifact.kind} · ${artifact.file_name} · ${artifact.viewer_mode} · ${artifact.download_state}`; card.append(title, meta); if (artifact.download_url) { const link = document.createElement('a'); link.className = 'button'; link.href = artifact.download_url; link.textContent = 'Download validated bytes'; card.appendChild(link); } root.appendChild(card); }); } catch (error) { showMessage(root, error.message, true); }
+  }
+
+  async function pollGeneric(operationId, root) {
+    try {
+      const operation = await requestJson(`/api/r0/actions/${encodeURIComponent(operationId)}`);
+      setText(root, `${operation.status}: ${operation.steps.map((step) => `${step.step_id}=${step.status}`).join(', ')}`);
+      if (['pending', 'running'].includes(operation.status)) { window.setTimeout(() => pollGeneric(operationId, root), 1000); return; }
+      if (operation.kind === 'data-update' && ['partial', 'error'].includes(operation.status)) { state.updateOperation = operation.operation_id; $('#retry-update').hidden = false; }
+    } catch (error) { setText(root, `unknown: ${error.message}`); }
+  }
+
+  async function initDataStatus() {
+    const root = $('#data-status-list'); if (!root) return; let plan = null;
+    try { const payload = await requestJson('/api/r0/data-status'); setText($('#status-checked-at'), payload.checked_at); root.replaceChildren(); payload.scope_status.forEach((scope) => { const row = document.createElement('div'); row.className = 'status-row'; ['scope', 'current_local_date', 'latest_expected_date', 'needs_update', 'reason'].forEach((key) => { const node = document.createElement(key === 'scope' ? 'strong' : 'span'); node.textContent = `${key}: ${format(scope[key])}`; row.appendChild(node); }); root.appendChild(row); }); const restart = payload.restart; setText($('#restart-capability'), restart.available ? 'Required topology verified.' : 'restart_unavailable: systemd socket activation, Type=notify, inherited listener, fixed helper/receipt and server post-send hook are not all available. No receipt, signal or process exit will occur.'); $('#restart-service').disabled = !restart.available; setText($('#restart-service'), restart.available ? 'Request restart' : 'Restart unavailable'); } catch (error) { showMessage(root, error.message, true); }
+    $('#preview-update').addEventListener('click', async () => { const scopes = $$('#update-scopes input:checked').map((input) => input.value); if (!scopes.length) { setText($('#update-plan'), 'Select at least one scope.'); return; } const params = new URLSearchParams({ scopes: scopes.join(','), force: String($('#update-force').checked) }); try { plan = await requestJson(`/api/r0/data-update-plan?${params}`); setText($('#update-plan'), JSON.stringify(plan, null, 2)); $('#start-update').disabled = false; } catch (error) { setText($('#update-plan'), error.message); } });
+    $('#start-update').addEventListener('click', async () => { if (!plan || !await confirmAction(`Public-unsafe action. Network pull/write/rebuild: ${plan.resolved_scopes.join(', ')}. ETA ${plan.steps.reduce((sum, step) => sum + step.eta_seconds, 0)}s. Confirmation prevents mistakes only; it is not access control.`, 'Start update')) return; $('#start-update').disabled = true; $('#retry-update').hidden = true; try { const operation = await requestJson('/api/r0/actions/data-update', { method: 'POST', body: JSON.stringify({ scopes: plan.requested_scopes, force: plan.force }) }); state.updateOperation = operation.operation_id; setText($('#update-plan'), JSON.stringify(operation.resolved_plan, null, 2)); pollGeneric(operation.operation_id, $('#update-progress')); } catch (error) { setText($('#update-progress'), error.message); $('#start-update').disabled = false; } });
+    $('#retry-update').addEventListener('click', async () => { if (!state.updateOperation) return; try { const operation = await requestJson(`/api/r0/actions/${encodeURIComponent(state.updateOperation)}/retry`, { method: 'POST' }); $('#retry-update').hidden = true; state.updateOperation = operation.operation_id; setText($('#update-plan'), JSON.stringify(operation.resolved_plan, null, 2)); pollGeneric(operation.operation_id, $('#update-progress')); } catch (error) { setText($('#update-progress'), error.message); } });
+    $('#restart-service').addEventListener('click', async () => { if ($('#restart-service').disabled || !await confirmAction('Public-unsafe restart request. A successful 202 is complete only after the boot id changes and health is ready. Confirmation is not access control.', 'Request restart')) return; try { const operation = await requestJson('/api/r0/actions/restart', { method: 'POST' }); setText($('#restart-progress'), `scheduled: ${operation.operation_id}`); pollGeneric(operation.operation_id, $('#restart-progress')); } catch (error) { setText($('#restart-progress'), `${error.body?.error || 'restart_error'}: ${error.message}`); } });
+  }
+
+  async function initManual() {
+    const root = $('#manual-records-table'); if (!root) return; const config = JSON.parse($('#manual-config').textContent); const select = $('#manual-strategy'); const message = $('#manual-message'); let pendingCreate = null;
+    async function loadCapabilities() { const payload = await requestJson('/api/r0/manual-records/capabilities'); select.replaceChildren(); payload.items.forEach((item) => { const option = document.createElement('option'); option.value = item.strategy_id; option.textContent = `${item.display_name} (${item.currency})`; select.appendChild(option); }); select.value = payload.items.some((item) => item.strategy_id === config.strategy) ? config.strategy : payload.items[0]?.strategy_id || ''; }
+    async function loadRecords() { if (!select.value) return; try { const payload = await fetchAllPages(`/api/r0/manual-records?strategy=${encodeURIComponent(select.value)}&limit=100`); setText($('#manual-record-count'), payload.total, '0'); renderTable(root, payload.items, ['date', 'strategy', 'capital', 'actual_position', 'exec_price', 'shares', 'notes', 'created_at'], (row, cell) => { const button = document.createElement('button'); button.type = 'button'; button.className = 'button'; button.textContent = 'Delete'; button.addEventListener('click', async () => { if (!await confirmAction('Irreversibly delete this payload? This public, unauthenticated action has no identity attribution or recovery.', 'Delete record')) return; try { await requestJson(`/api/r0/manual-records/${encodeURIComponent(row.record_id)}`, { method: 'DELETE' }); await loadRecords(); } catch (error) { showMessage(message, error.message, true); } }); cell.appendChild(button); }); await loadSignalAndReconciliation(); } catch (error) { showMessage(message, error.message, true); } }
+    async function loadSignalAndReconciliation() { let context = null; try { context = JSON.parse(localStorage.getItem('r0-last-snapshot')); } catch (_) {} if (!context || context.strategy_id !== select.value) { setText($('#signal-reference'), 'Open an exact snapshot for this strategy first.'); setText($('#reconciliation-view'), 'No exact snapshot selected.'); return; } try { const signal = await requestJson(`/api/r0/manual-records/signal-reference?strategy=${encodeURIComponent(select.value)}&snapshot_id=${encodeURIComponent(context.snapshot_id)}`); const pre = document.createElement('pre'); pre.className = 'plan-box'; pre.textContent = JSON.stringify(signal, null, 2); $('#signal-reference').replaceChildren(pre); const summary = await requestJson(`/api/r0/manual-records/reconciliation?strategy=${encodeURIComponent(select.value)}&snapshot_id=${encodeURIComponent(context.snapshot_id)}`); const series = await fetchAllPages(`${summary.series_url}&limit=100`); renderTable($('#reconciliation-view'), series.items, ['date', 'strategy_nav', 'manual_nav', 'actual_position', 'strategy_target', 'external_flow']); } catch (error) { setText($('#signal-reference'), error.message); setText($('#reconciliation-view'), error.message); } }
+    $('#manual-form').addEventListener('submit', async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); const body = { date: form.get('date'), strategy: select.value, capital: form.get('capital'), signal_target: form.get('signal_target') || null, exec_price: form.get('exec_price') || null, shares: form.get('shares') || null, actual_position: form.get('actual_position') || null, notes: form.get('notes') }; const serialized = JSON.stringify(body); if (!pendingCreate || pendingCreate.body !== serialized) pendingCreate = { body: serialized, key: crypto.randomUUID() }; try { await requestJson('/api/r0/manual-records', { method: 'POST', headers: { 'Idempotency-Key': pendingCreate.key }, body: pendingCreate.body }); pendingCreate = null; event.currentTarget.reset(); $('#record-capital').value = '50000'; await loadRecords(); } catch (error) { showMessage(message, error.message, true); } });
+    $('#refresh-records').addEventListener('click', loadRecords); select.addEventListener('change', loadRecords); await loadCapabilities(); await loadRecords();
   }
 
   initNavigation();
-  initTabs();
   const page = document.body.dataset.page;
-  if (page === 'snapshot') initSnapshotPage();
-  if (page === 'legacy') initLegacyPage();
-  if (page === 'data-status') initDataStatusPage();
-  if (page === 'manual-records') initManualRecordsPage();
+  if (page === 'snapshot') initSnapshot();
+  if (page === 'legacy') initLegacy();
+  if (page === 'data-status') initDataStatus();
+  if (page === 'manual-records') initManual();
 })();
