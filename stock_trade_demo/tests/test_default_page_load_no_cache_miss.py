@@ -39,9 +39,10 @@ import urllib.parse
 
 import pandas as pd
 import pytest
+from flask import Flask
 
 from web import state
-from web.app import create_app
+from web.blueprints import select_api, timing_api, us_timing_api
 from web.params import TimingParams
 
 
@@ -50,7 +51,12 @@ from web.params import TimingParams
 # ───────────────────────────────────────────────────────────────────────
 @pytest.fixture
 def client():
-    app = create_app()
+    # Exercise the dormant legacy blueprint contracts in isolation. The R0
+    # application itself intentionally exposes none of these API routes.
+    app = Flask(__name__)
+    app.register_blueprint(select_api.bp)
+    app.register_blueprint(timing_api.bp)
+    app.register_blueprint(us_timing_api.bp)
     app.config['TESTING'] = True
     with app.test_client() as c:
         yield c

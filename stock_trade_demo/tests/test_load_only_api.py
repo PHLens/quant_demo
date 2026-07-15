@@ -14,14 +14,20 @@ import json
 
 import pandas as pd
 import pytest
+from flask import Flask
 
 from web import state
-from web.app import create_app
+from web.blueprints import select_api, timing_api, us_timing_api
 
 
 @pytest.fixture
 def client():
-    app = create_app()
+    # These are unit tests for dormant legacy blueprints. R0 create_app()
+    # intentionally does not register any of them.
+    app = Flask(__name__)
+    app.register_blueprint(select_api.bp)
+    app.register_blueprint(timing_api.bp)
+    app.register_blueprint(us_timing_api.bp)
     app.config['TESTING'] = True
     with app.test_client() as c:
         yield c

@@ -86,8 +86,30 @@ def test_legacy_live_surface_is_not_registered(app, client):
 def test_r0_blocks_fresh_calculation_endpoint(client, monkeypatch):
     monkeypatch.setattr(state, 'run_timing_backtest_fresh', lambda *_a, **_k: (_ for _ in ()).throw(AssertionError('calculation called')))
     response = client.get('/api/timing/explore_compare?force=1')
-    assert response.status_code == 405
-    assert response.get_json()['error'] == 'read_only_viewer'
+    assert response.status_code == 404
+
+
+def test_r0_app_registers_no_legacy_api_blueprints(app):
+    rules = list(app.url_map.iter_rules())
+    api_rules = [rule for rule in rules if rule.rule.startswith('/api/')]
+    assert api_rules
+    assert all(rule.rule.startswith('/api/r0/') for rule in api_rules)
+    assert all(
+        rule.endpoint == 'static'
+        or rule.endpoint.startswith('pages.')
+        or rule.endpoint.startswith('r0_viewer_api.')
+        for rule in rules
+    )
+
+
+def test_removed_us_strategy_list_never_enters_handler(client, monkeypatch):
+    monkeypatch.setattr(
+        state,
+        'ensure_us_timing_panel_loaded',
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError('network-capable loader called')),
+    )
+    response = client.get('/api/us_timing/strategy_list')
+    assert response.status_code == 404
 
 
 def test_all_r0_api_rules_are_get_only(app):
