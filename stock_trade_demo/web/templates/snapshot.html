@@ -33,6 +33,7 @@
 
 <section id="recovery-notice" class="card recovery-card" aria-live="polite" aria-busy="false" hidden>
   <h2>Known catalog cache is unavailable</h2><p id="recovery-context"></p><div id="recovery-plan"></div>
+  <div id="bootstrap-guidance" class="bootstrap-guidance" hidden><h3>首次使用需要先初始化数据</h3><p>这不是等待代码 Review。请先到 Data Status 选择页面列出的固定 scope，Preview 后确认 Update，跟踪完成，再返回此页打开 Snapshot。</p><div class="card-actions"><a class="button primary" href="/data-status">前往 Data Status</a><a class="button" href="/operation-guide">查看完整操作指南</a></div></div>
   <p class="danger-text">公网无鉴权：一次点击会联网、写盘并运行固定 builder；任何互联网用户或 bot 都能重复触发。</p>
   <div class="card-actions"><button class="button primary" id="recover-cache" type="button">拉取数据并恢复此缓存</button><button class="button" id="retry-recovery" type="button" hidden>Retry failed steps</button></div>
 </section>

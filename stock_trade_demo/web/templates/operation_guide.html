@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Operation Guide · Quant Archive{% endblock %}
+{% block page_id %}operation-guide{% endblock %}
+{% block content %}
+<header class="page-head"><div><p class="eyebrow">Start here</p><h1>操作指南</h1><p class="lede">从首次数据初始化到打开 Snapshot 的完整路径，以及进度、失败与重试的含义。</p></div><div class="card-actions"><a class="button primary" href="/data-status">前往 Data Status</a><a class="button" href="/snapshots">前往 Snapshots</a></div></header>
+
+<aside class="notice" role="note"><div><strong>运行 Update 不需要等待 Reviewer</strong><p>Reviewer 审核的是代码和部署。Data Status 中的 Preview 是只读计划；Confirm and update 经二次确认后会立即执行。当前站点公网无鉴权，这个确认不是访问控制。</p></div></aside>
+
+<section class="section" aria-labelledby="page-guide-heading"><div class="section-head"><div><h2 id="page-guide-heading">四个主页面怎么用</h2><p>先判断你是要浏览已发布结果、检查数据、查看旧产物，还是维护手工记录。</p></div></div>
+  <div class="grid guide-grid page-guide-grid">
+    <article class="card guide-card"><div class="guide-card-head"><h3>Snapshot Explorer</h3><span class="action-kind readonly">只读浏览</span></div><p>查看固定 catalog 中已经发布的策略快照。依次选择 Source、Strategy、Catalog variant，再按需设置日期、benchmark 与 resolution，点击 Open snapshot。</p><ul><li><code>ready/data_stale/degraded</code> 可读；页面会展示 summary 和该策略支持的明细 tabs。</li><li><code>missing/corrupt/artifact_stale</code> 不可读；只有 <code>recoverable_now=true</code> 才显示目标恢复按钮。</li><li><code>bootstrap_required</code> 必须先按下方流程去 Data Status 初始化。</li></ul><a class="button" href="/snapshots">打开 Snapshot Explorer</a></article>
+    <article class="card guide-card"><div class="guide-card-head"><h3>Data Status</h3><span class="action-kind mixed">检查只读 · Update 写盘</span></div><p>查看 index、aux、stock、factor 固定 scope 的本地日期、预期日期与更新原因。状态检查和 Preview 不写数据；Confirm and update、Retry 会联网并写盘。</p><ul><li>首次 bootstrap、数据过期或 Snapshot 明确要求更新时使用。</li><li>Update 接受后通过进度窗查看 operation 与每个 step。</li><li>完成后返回 Snapshot 验证，不把“已接受”当作“已完成”。</li></ul><a class="button" href="/data-status">打开 Data Status</a></article>
+    <article class="card guide-card"><div class="guide-card-head"><h3>Legacy Artifacts</h3><span class="action-kind readonly">只读浏览/下载</span></div><p>查看固定的 17 项旧版产物清单、文件类型、viewer mode 与 download state。只有通过 allowlist、大小和 symlink 校验的字节才提供下载。</p><ul><li>缺失或不可下载的 slot 仍会显示元数据，不会临时扫描或执行旧脚本。</li><li>下载是读取已验证文件，不会触发 rebuild、网络拉取或策略运行。</li></ul><a class="button" href="/legacy-artifacts">打开 Legacy Artifacts</a></article>
+    <article class="card guide-card"><div class="guide-card-head"><h3>Manual Records</h3><span class="action-kind write">创建/删除会写盘</span></div><p>按支持的 strategy 维护手工资金、仓位、成交价和备注，并与本浏览器最后打开的精确 Snapshot 做对账。</p><ul><li>查看记录、signal reference 与 reconciliation 是只读。</li><li>Create 会写入 ledger；Delete 是不可恢复 tombstone 操作。</li><li>公网无鉴权时，资金、仓位和备注对所有访问者可见。</li></ul><a class="button" href="/manual-records">打开 Manual Records</a></article>
+  </div>
+</section>
+
+<section class="section" aria-labelledby="bootstrap-guide-heading"><div class="section-head"><div><h2 id="bootstrap-guide-heading">首次 bootstrap：先做什么，再做什么</h2><p>当 Snapshot 显示 <code>bootstrap_required</code> 时，目标恢复按钮不会出现。</p></div></div>
+  <ol class="workflow-list guide-workflow">
+    <li><strong>在 Snapshot 确认 blocker</strong><span>页面会列出目标需要的 recovery scopes；Selection 首次初始化通常是 stock + index。</span></li>
+    <li><strong>打开 Data Status 并选择 scope</strong><span>只勾选明确需要的固定 scope。勾选本身不会写数据。</span></li>
+    <li><strong>点击 Preview plan</strong><span>检查 resolved scopes、依赖、受影响目标和 ETA。Preview 是 GET，只读且不会启动 worker。</span></li>
+    <li><strong>点击 Confirm and update</strong><span>确认框同意后立即联网、写盘并按固定流程重建；不会等待 Reviewer。</span></li>
+    <li><strong>在进度窗跟踪 operation</strong><span>可收起继续浏览；返回或刷新 Data Status 时，本浏览器会用保存的 operation ID 恢复查询。</span></li>
+    <li><strong>处理终态</strong><span><code>done</code> 后返回 Snapshot；<code>partial</code>/<code>error</code> 查看失败 step，并用 Retry failed steps 只重试允许的失败路径。</span></li>
+    <li><strong>重新打开 Snapshot</strong><span>若数据已更新但特定缓存仍可恢复，Snapshot 会显示目标级恢复按钮；否则继续展示明确 blocker。</span></li>
+  </ol>
+</section>
+
+<section class="section grid guide-grid" aria-label="Operation reference">
+  <article class="card"><h2>进度在哪里看</h2><p>任务被接受后会自动打开进度窗，显示 operation ID、总体百分比、每个 step 的状态与错误。收起后，Data Status 的“查看当前/最近进度”可再次打开。</p><p>服务重启会清空服务端内存 operation；页面仍保留最后已知状态并明确提示无法继续实时查询。</p></article>
+  <article class="card"><h2>状态含义</h2><dl class="guide-definitions"><div><dt>pending / running</dt><dd>已接受或执行中，请继续等待。</dd></div><div><dt>done</dt><dd>固定步骤完成，可返回 Snapshot 验证。</dd></div><div><dt>partial</dt><dd>部分 scope/目标成功，检查失败 step 后再决定 Retry。</dd></div><div><dt>error</dt><dd>操作失败或稳定化失败；不要把它当作已完成。</dd></div><div><dt>unavailable</dt><dd>当前服务 boot 已找不到 operation，只能参考最后已知状态。</dd></div></dl></article>
+  <article class="card"><h2>哪些动作会写数据</h2><p>Preview、状态检查、查看 Snapshot 和本指南都是只读 GET。Confirm and update、Retry、目标恢复与 Manual Records 写操作会改变本地状态；重启在当前部署中仍不可用。</p></article>
+  <article class="card"><h2>安全边界</h2><p>不涉及账户、broker、订单、任何交易执行或自动调度。Update 只处理固定公共数据 scope 和固定 catalog 目标，但公网无鉴权意味着任何访问者都可能重复触发资源消耗。</p></article>
+</section>
+{% endblock %}

@@ -96,12 +96,12 @@ def test_legacy_html_aliases_are_one_hop_and_discard_query(client, path, destina
     assert response.headers['Location'] == destination
 
 
-@pytest.mark.parametrize('path', ['/snapshots', '/legacy-artifacts', '/data-status', '/manual-records'])
-def test_four_canonical_pages_share_navigation_and_public_warning(client, path):
+@pytest.mark.parametrize('path', ['/snapshots', '/legacy-artifacts', '/data-status', '/operation-guide', '/manual-records'])
+def test_canonical_pages_share_navigation_and_public_warning(client, path):
     response = client.get(path)
     assert response.status_code == 200
     html = response.get_data(as_text=True)
-    for label in ('Snapshot Explorer', 'Legacy Artifacts', 'Data Status', 'Manual Records'):
+    for label in ('Snapshot Explorer', 'Legacy Artifacts', 'Data Status', 'Operation Guide', 'Manual Records'):
         assert label in html
     assert 'Public unsafe mode' in html
     assert '不是访问控制' in html
@@ -119,11 +119,54 @@ def test_bootstrap_blocked_recovery_button_is_visually_hidden(client):
     javascript = client.get('/static/js/r0.js').get_data(as_text=True)
     stylesheet = client.get('/static/css/r0.css').get_data(as_text=True)
     assert 'id="recover-cache"' in html
+    assert 'id="bootstrap-guidance"' in html
+    assert 'href="/operation-guide"' in html
+    assert "variant.blocker_code === 'bootstrap_required'" in javascript
     assert "$('#recover-cache').hidden = !variant.recovery_supported || !variant.recoverable_now" in javascript
     assert re.search(
         r'\[hidden\]\s*\{[^}]*display\s*:\s*none\s*!important\s*;',
         stylesheet,
     )
+
+
+def test_operation_guide_covers_all_pages_and_read_write_boundaries(client):
+    html = client.get('/operation-guide').get_data(as_text=True)
+    for heading in ('Snapshot Explorer', 'Data Status', 'Legacy Artifacts', 'Manual Records'):
+        assert heading in html
+    for marker in ('只读浏览', '联网', '写盘', 'bootstrap_required', 'partial', 'error'):
+        assert marker in html
+    assert '运行 Update 不需要等待 Reviewer' in html
+    assert '账户、broker、订单' in html
+    for path in ('/snapshots', '/data-status', '/legacy-artifacts', '/manual-records'):
+        assert f'href="{path}"' in html
+
+
+def test_data_status_has_restorable_progress_retry_and_guide_links(client):
+    html = client.get('/data-status').get_data(as_text=True)
+    javascript = client.get('/static/js/r0.js').get_data(as_text=True)
+    for element_id in (
+        'open-update-progress', 'update-progress-dialog', 'update-operation-id',
+        'update-operation-status', 'update-progress-bar', 'update-step-list',
+        'retry-update', 'minimize-update-progress',
+    ):
+        assert f'id="{element_id}"' in html
+    assert 'Update 不需要等待代码 Review' in html
+    assert 'href="/operation-guide"' in html
+    for contract in (
+        "const UPDATE_OPERATION_STORAGE_KEY = 'r0-data-update-operation-v1'",
+        'localStorage.setItem(UPDATE_OPERATION_STORAGE_KEY',
+        'localStorage.getItem(UPDATE_OPERATION_STORAGE_KEY)',
+        'beginUpdateTracking(stored.operation_id',
+        "['pending', 'running'].includes(stored.status)",
+        '/api/r0/actions/${encodeURIComponent(operationId)}',
+        "['partial', 'error'].includes(compact.status)",
+        '/retry`, { method: \'POST\' }',
+        'showUpdateProgressDialog()',
+        'window.setTimeout(poll, 1000)',
+        'state.updatePlanReady = true',
+        'Selection changed. Preview the fixed plan again before updating.',
+    ):
+        assert contract in javascript
 
 
 def test_only_canonical_api_blueprint_is_registered(app, client):

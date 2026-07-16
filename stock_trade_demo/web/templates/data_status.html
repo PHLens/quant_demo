@@ -2,8 +2,32 @@
 {% block title %}Data Status · Quant Archive{% endblock %}
 {% block page_id %}data-status{% endblock %}
 {% block content %}
-<header class="page-head"><div><p class="eyebrow">Local status and explicit actions</p><h1>Data Status</h1><p class="lede">GET checks local metadata only. A POST can explicitly pull fixed scopes and rebuild affected registered targets.</p></div><div class="status-stack"><span class="badge" id="status-checked-at">loading</span></div></header>
+<header class="page-head"><div><p class="eyebrow">Local status and explicit actions</p><h1>Data Status</h1><p class="lede">GET checks local metadata only. A POST can explicitly pull fixed scopes and rebuild affected registered targets. <a href="/operation-guide">第一次操作？先看完整指南</a>。</p></div><div class="status-stack"><span class="badge" id="status-checked-at">loading</span></div></header>
 <section aria-labelledby="status-heading"><div class="section-head"><div><h2 id="status-heading">Source status</h2><p>Freshness is shown per scope; one newer cache never hides another stale scope.</p></div></div><div id="data-status-list" class="status-list" aria-live="polite"></div></section>
-<section class="section card" aria-labelledby="operations-heading"><h2 id="operations-heading">数据操作</h2><p>确认只防误触，不是安全授权。</p><fieldset class="scope-grid" id="update-scopes"><legend>Fixed scopes</legend><label><input type="checkbox" value="index"> index</label><label><input type="checkbox" value="aux"> aux</label><label><input type="checkbox" value="stock"> stock</label><label><input type="checkbox" value="factor"> factor</label></fieldset><label><input id="update-force" type="checkbox"> Force explicitly selected scopes only</label><div class="card-actions"><button class="button" id="preview-update" type="button">Preview plan</button><button class="button primary" id="start-update" type="button" disabled>Confirm and update</button><button class="button" id="retry-update" type="button" hidden>Retry failed steps</button></div><pre id="update-plan" class="plan-box" aria-live="polite"></pre><div id="update-progress" aria-live="polite"></div></section>
+<aside class="notice operation-explainer" role="note"><div><strong>Update 不需要等待代码 Review</strong><p>Preview 只生成计划；点击 Confirm and update 并在确认框中同意后，任务会立即联网/写盘。代码 Review 只属于开发与部署流程，不是运行时审批。</p></div><a class="button" href="/operation-guide">查看操作指南</a></aside>
+<section class="section card" aria-labelledby="operations-heading">
+  <h2 id="operations-heading">数据操作</h2>
+  <ol class="workflow-list compact" aria-label="Update workflow">
+    <li><strong>1. 选择 scope</strong><span>首次 Selection bootstrap 需要 stock + index。</span></li>
+    <li><strong>2. Preview</strong><span>检查固定依赖、预计耗时与受影响目标，不写数据。</span></li>
+    <li><strong>3. Confirm and update</strong><span>确认后立即执行；进度窗可收起，刷新后仍会恢复。</span></li>
+    <li><strong>4. 返回 Snapshot</strong><span>任务完成后重新打开目标；失败/partial 可重试失败步骤。</span></li>
+  </ol>
+  <p>确认只防误触，不是安全授权。</p>
+  <fieldset class="scope-grid" id="update-scopes"><legend>Fixed scopes</legend><label><input type="checkbox" value="index"> index</label><label><input type="checkbox" value="aux"> aux</label><label><input type="checkbox" value="stock"> stock</label><label><input type="checkbox" value="factor"> factor</label></fieldset>
+  <label><input id="update-force" type="checkbox"> Force explicitly selected scopes only</label>
+  <div class="card-actions"><button class="button" id="preview-update" type="button">Preview plan</button><button class="button primary" id="start-update" type="button" disabled>Confirm and update</button><button class="button" id="open-update-progress" type="button" hidden>查看当前/最近进度</button></div>
+  <pre id="update-plan" class="plan-box" aria-live="polite"></pre>
+  <div id="update-progress" class="operation-summary" aria-live="polite">本浏览器尚未记录 update operation。</div>
+</section>
+<dialog id="update-progress-dialog" class="confirm-dialog progress-dialog" aria-labelledby="update-progress-title" aria-describedby="update-progress-description">
+  <div class="progress-dialog-head"><div><p class="eyebrow">Persistent in this browser</p><h2 id="update-progress-title">Update progress</h2></div><span class="badge" id="update-operation-status">pending</span></div>
+  <p id="update-progress-description">页面刷新后会从本浏览器保存的 operation ID 继续查询；服务重启后只能显示最后已知状态。</p>
+  <div class="operation-meta"><span>Operation</span><code id="update-operation-id">unknown</code><span id="update-operation-percent">0%</span></div>
+  <progress id="update-progress-bar" max="100" value="0" aria-label="Overall update progress">0%</progress>
+  <ol id="update-step-list" class="operation-steps" aria-live="polite"></ol>
+  <div id="update-operation-error" class="notice danger" role="alert" hidden></div>
+  <div class="card-actions progress-actions"><a class="button" href="/operation-guide">操作指南</a><a class="button" href="/snapshots">返回 Snapshots</a><button class="button" id="retry-update" type="button" hidden>Retry failed steps</button><button class="button primary" id="minimize-update-progress" type="button">收起，后台继续</button></div>
+</dialog>
 <section class="section card" aria-labelledby="restart-heading"><h2 id="restart-heading">Service restart</h2><p id="restart-capability">Checking required socket-activation topology…</p><button class="button" id="restart-service" type="button" disabled>Restart unavailable</button><div id="restart-progress" aria-live="polite"></div></section>
 {% endblock %}

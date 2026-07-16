@@ -27,6 +27,11 @@ def data_status_page():
     return render_template('data_status.html')
 
 
+@bp.get('/operation-guide')
+def operation_guide_page():
+    return render_template('operation_guide.html')
+
+
 @bp.get('/manual-records')
 def manual_records_page():
     return render_template('manual_records.html', initial_strategy=request.args.get('strategy', 'star50_timing'))

@@ -3,7 +3,8 @@
 
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
-  const state = { snapshot: null, loadedTabs: new Set(), recoveryOperation: null, updateOperation: null };
+  const UPDATE_OPERATION_STORAGE_KEY = 'r0-data-update-operation-v1';
+  const state = { snapshot: null, loadedTabs: new Set(), recoveryOperation: null, updateOperation: null, updateActive: false, updatePlanReady: false, updatePollGeneration: 0 };
 
   function setText(node, value, fallback = 'unknown') {
     if (node) node.textContent = value == null || value === '' ? fallback : String(value);
@@ -169,10 +170,11 @@
     }
     function renderVariantState(variant) {
       if (!variant) return; setText($('#snapshot-state'), variant.cache_state); setText($('#snapshot-freshness'), variant.freshness_state);
-      const notice = $('#recovery-notice'); if (variant.readable) { notice.hidden = true; return; }
+      const notice = $('#recovery-notice'); const bootstrap = variant.blocker_code === 'bootstrap_required'; $('#bootstrap-guidance').hidden = !bootstrap;
+      if (variant.readable) { notice.hidden = true; return; }
       notice.hidden = false; notice.setAttribute('aria-busy', variant.cache_state === 'recovering' ? 'true' : 'false');
       setText($('#recovery-context'), `${variant.source_id} / ${variant.strategy_id} / ${variant.variant_id}; blocker=${variant.blocker_code || 'none'}`);
-      setText($('#recovery-plan'), variant.recovery_steps ? `${variant.recovery_steps.map((step) => step.label).join(' → ')}; ETA ${variant.eta_seconds || 'unknown'}s` : 'No fixed online recovery plan.');
+      setText($('#recovery-plan'), bootstrap ? `首次 bootstrap 顺序：${(variant.recovery_scopes || []).join(' + ') || '查看 Data Status'} → Preview → Confirm and update → 跟踪完成 → 返回 Snapshot。` : (variant.recovery_steps ? `${variant.recovery_steps.map((step) => step.label).join(' → ')}; ETA ${variant.eta_seconds || 'unknown'}s` : 'No fixed online recovery plan.'));
       $('#recover-cache').hidden = !variant.recovery_supported || !variant.recoverable_now; $('#recover-cache').disabled = variant.cache_state === 'recovering';
       if (variant.operation_id) pollOperation(variant.operation_id, true);
     }
@@ -204,7 +206,8 @@
         syncTabs(capabilities); localStorage.setItem('r0-last-snapshot', JSON.stringify({ source_id: payload.source_id, strategy_id: payload.strategy_id, snapshot_id: payload.snapshot_id }));
         await loadResource($('[role="tab"][aria-selected="true"]:not([hidden])')?.dataset.resource || 'configuration');
       } catch (error) {
-        showMessage(message, `${error.body?.error || 'snapshot_error'}: ${error.message}`, true); const variant = variants.find((item) => item.variant_id === variantSelect.value); renderVariantState(variant);
+        const bootstrap = error.body?.blocker_code === 'bootstrap_required';
+        showMessage(message, bootstrap ? '首次使用需要先初始化数据：前往 Data Status，按页面提示 Preview 并确认 Update；这不是等待代码 Review。' : `${error.body?.error || 'snapshot_error'}: ${error.message}`, true); const variant = variants.find((item) => item.variant_id === variantSelect.value); renderVariantState(variant);
       }
     }
     async function loadResource(resource) {
@@ -239,17 +242,110 @@
       const operation = await requestJson(`/api/r0/actions/${encodeURIComponent(operationId)}`);
       setText(root, `${operation.status}: ${operation.steps.map((step) => `${step.step_id}=${step.status}`).join(', ')}`);
       if (['pending', 'running'].includes(operation.status)) { window.setTimeout(() => pollGeneric(operationId, root), 1000); return; }
-      if (operation.kind === 'data-update' && ['partial', 'error'].includes(operation.status)) { state.updateOperation = operation.operation_id; $('#retry-update').hidden = false; }
     } catch (error) { setText(root, `unknown: ${error.message}`); }
+  }
+
+  function compactUpdateOperation(operation) {
+    return {
+      operation_id: operation.operation_id,
+      kind: operation.kind || 'data-update',
+      status: operation.status || 'pending',
+      error_code: operation.error_code || null,
+      created_at: operation.created_at || null,
+      finished_at: operation.finished_at || null,
+      steps: Array.isArray(operation.steps) ? operation.steps.map((step) => ({
+        step_id: step.step_id, scope: step.scope || null, status: step.status || 'pending',
+        progress: Number.isFinite(Number(step.progress)) ? Number(step.progress) : 0,
+        message: step.message || null, error_code: step.error_code || null,
+        blocked_by: Array.isArray(step.blocked_by) ? step.blocked_by : [],
+      })) : [],
+    };
+  }
+
+  function saveUpdateOperation(operation) {
+    try { localStorage.setItem(UPDATE_OPERATION_STORAGE_KEY, JSON.stringify(compactUpdateOperation(operation))); } catch (_) {}
+  }
+
+  function loadUpdateOperation() {
+    try {
+      const value = JSON.parse(localStorage.getItem(UPDATE_OPERATION_STORAGE_KEY));
+      return value && typeof value.operation_id === 'string' && value.operation_id ? value : null;
+    } catch (_) { return null; }
+  }
+
+  function updateProgressPercent(operation) {
+    const steps = Array.isArray(operation.steps) ? operation.steps : [];
+    if (operation.status === 'done') return 100;
+    if (!steps.length) return operation.status === 'pending' ? 0 : 1;
+    return Math.max(0, Math.min(100, Math.round(steps.reduce((sum, step) => sum + Math.max(0, Math.min(100, Number(step.progress) || 0)), 0) / steps.length)));
+  }
+
+  function showUpdateProgressDialog() {
+    const dialog = $('#update-progress-dialog');
+    if (dialog && !dialog.open && typeof dialog.showModal === 'function') dialog.showModal();
+  }
+
+  function renderUpdateOperation(operation) {
+    const compact = compactUpdateOperation(operation); const percent = updateProgressPercent(compact); const active = ['pending', 'running'].includes(compact.status);
+    state.updateOperation = compact.operation_id; state.updateActive = active;
+    const start = $('#start-update'); if (start) start.disabled = active || !state.updatePlanReady;
+    setText($('#update-operation-id'), compact.operation_id); setText($('#update-operation-status'), compact.status); setText($('#update-operation-percent'), `${percent}%`);
+    const bar = $('#update-progress-bar'); bar.value = percent; bar.textContent = `${percent}%`; bar.setAttribute('aria-valuenow', String(percent));
+    setText($('#update-progress'), `${compact.status} · ${percent}% · operation ${compact.operation_id}`);
+    $('#open-update-progress').hidden = false; $('#retry-update').hidden = !['partial', 'error'].includes(compact.status);
+    const error = $('#update-operation-error'); error.hidden = !compact.error_code; setText(error, compact.error_code, '');
+    const list = $('#update-step-list'); list.replaceChildren();
+    compact.steps.forEach((step) => {
+      const item = document.createElement('li'); item.className = `operation-step status-${step.status}`;
+      const head = document.createElement('div'); const title = document.createElement('strong'); const status = document.createElement('span');
+      title.textContent = `${step.step_id}${step.scope ? ` · ${step.scope}` : ''}`; status.textContent = `${step.status} · ${step.progress}%`; head.append(title, status);
+      const progress = document.createElement('progress'); progress.max = 100; progress.value = step.progress; progress.setAttribute('aria-label', `${step.step_id} progress`);
+      item.append(head, progress);
+      if (step.message || step.error_code) { const detail = document.createElement('p'); detail.textContent = [step.message, step.error_code].filter(Boolean).join(' · '); item.appendChild(detail); }
+      list.appendChild(item);
+    });
+    if (!compact.steps.length) { const item = document.createElement('li'); item.className = 'operation-step'; item.textContent = 'Operation accepted; waiting for the first status response.'; list.appendChild(item); }
+    saveUpdateOperation(compact);
+  }
+
+  function renderUpdateUnavailable(cached, error) {
+    if (cached) renderUpdateOperation(cached);
+    state.updateActive = false; setText($('#update-operation-status'), 'unavailable');
+    setText($('#update-progress'), `unavailable · last known ${cached?.status || 'unknown'} · operation ${cached?.operation_id || state.updateOperation || 'unknown'}`);
+    const node = $('#update-operation-error'); showMessage(node, `当前服务 boot 无法继续查询此 operation：${error.message}。上方保留的是本浏览器最后已知状态。`, true);
+    $('#retry-update').hidden = true; $('#open-update-progress').hidden = false;
+  }
+
+  function beginUpdateTracking(operationId, { cached = null, open = false } = {}) {
+    state.updateOperation = operationId; const generation = ++state.updatePollGeneration;
+    if (cached) renderUpdateOperation(cached); if (open) showUpdateProgressDialog();
+    const poll = async () => {
+      if (generation !== state.updatePollGeneration) return;
+      try {
+        const operation = await requestJson(`/api/r0/actions/${encodeURIComponent(operationId)}`);
+        if (generation !== state.updatePollGeneration) return;
+        renderUpdateOperation(operation);
+        if (['pending', 'running'].includes(operation.status)) window.setTimeout(poll, 1000);
+      } catch (error) {
+        if (generation !== state.updatePollGeneration) return;
+        if (error.status === 404) { renderUpdateUnavailable(loadUpdateOperation() || cached, error); return; }
+        const node = $('#update-operation-error'); showMessage(node, `进度查询暂时失败：${error.message}。3 秒后重试。`, true); window.setTimeout(poll, 3000);
+      }
+    };
+    poll();
   }
 
   async function initDataStatus() {
     const root = $('#data-status-list'); if (!root) return; let plan = null;
     try { const payload = await requestJson('/api/r0/data-status'); setText($('#status-checked-at'), payload.checked_at); root.replaceChildren(); payload.scope_status.forEach((scope) => { const row = document.createElement('div'); row.className = 'status-row'; ['scope', 'current_local_date', 'latest_expected_date', 'needs_update', 'reason'].forEach((key) => { const node = document.createElement(key === 'scope' ? 'strong' : 'span'); node.textContent = `${key}: ${format(scope[key])}`; row.appendChild(node); }); root.appendChild(row); }); const restart = payload.restart; setText($('#restart-capability'), restart.available ? 'Required topology verified.' : 'restart_unavailable: systemd socket activation, Type=notify, inherited listener, fixed helper/receipt and server post-send hook are not all available. No receipt, signal or process exit will occur.'); $('#restart-service').disabled = !restart.available; setText($('#restart-service'), restart.available ? 'Request restart' : 'Restart unavailable'); } catch (error) { showMessage(root, error.message, true); }
-    $('#preview-update').addEventListener('click', async () => { const scopes = $$('#update-scopes input:checked').map((input) => input.value); if (!scopes.length) { setText($('#update-plan'), 'Select at least one scope.'); return; } const params = new URLSearchParams({ scopes: scopes.join(','), force: String($('#update-force').checked) }); try { plan = await requestJson(`/api/r0/data-update-plan?${params}`); setText($('#update-plan'), JSON.stringify(plan, null, 2)); $('#start-update').disabled = false; } catch (error) { setText($('#update-plan'), error.message); } });
-    $('#start-update').addEventListener('click', async () => { if (!plan || !await confirmAction(`Public-unsafe action. Network pull/write/rebuild: ${plan.resolved_scopes.join(', ')}. ETA ${plan.steps.reduce((sum, step) => sum + step.eta_seconds, 0)}s. Confirmation prevents mistakes only; it is not access control.`, 'Start update')) return; $('#start-update').disabled = true; $('#retry-update').hidden = true; try { const operation = await requestJson('/api/r0/actions/data-update', { method: 'POST', body: JSON.stringify({ scopes: plan.requested_scopes, force: plan.force }) }); state.updateOperation = operation.operation_id; setText($('#update-plan'), JSON.stringify(operation.resolved_plan, null, 2)); pollGeneric(operation.operation_id, $('#update-progress')); } catch (error) { setText($('#update-progress'), error.message); $('#start-update').disabled = false; } });
-    $('#retry-update').addEventListener('click', async () => { if (!state.updateOperation) return; try { const operation = await requestJson(`/api/r0/actions/${encodeURIComponent(state.updateOperation)}/retry`, { method: 'POST' }); $('#retry-update').hidden = true; state.updateOperation = operation.operation_id; setText($('#update-plan'), JSON.stringify(operation.resolved_plan, null, 2)); pollGeneric(operation.operation_id, $('#update-progress')); } catch (error) { setText($('#update-progress'), error.message); } });
+    $('#preview-update').addEventListener('click', async () => { const scopes = $$('#update-scopes input:checked').map((input) => input.value); if (!scopes.length) { state.updatePlanReady = false; $('#start-update').disabled = true; setText($('#update-plan'), 'Select at least one scope.'); return; } const params = new URLSearchParams({ scopes: scopes.join(','), force: String($('#update-force').checked) }); try { plan = await requestJson(`/api/r0/data-update-plan?${params}`); state.updatePlanReady = true; setText($('#update-plan'), JSON.stringify(plan, null, 2)); $('#start-update').disabled = state.updateActive; if (state.updateActive) setText($('#update-progress'), `operation ${state.updateOperation} 仍在执行；请先查看当前进度。`); } catch (error) { plan = null; state.updatePlanReady = false; $('#start-update').disabled = true; setText($('#update-plan'), error.message); } });
+    $('#start-update').addEventListener('click', async () => { if (!plan || state.updateActive || !await confirmAction(`Public-unsafe action. Network pull/write/rebuild starts immediately; it does not wait for code review. Scopes: ${plan.resolved_scopes.join(', ')}. ETA ${plan.steps.reduce((sum, step) => sum + step.eta_seconds, 0)}s. Confirmation prevents mistakes only; it is not access control.`, 'Start update')) return; $('#start-update').disabled = true; $('#retry-update').hidden = true; try { const operation = await requestJson('/api/r0/actions/data-update', { method: 'POST', body: JSON.stringify({ scopes: plan.requested_scopes, force: plan.force }) }); setText($('#update-plan'), JSON.stringify(operation.resolved_plan, null, 2)); const cached = { operation_id: operation.operation_id, kind: 'data-update', status: 'pending', error_code: null, steps: (plan.steps || []).map((step) => ({ step_id: step.step_id, scope: step.scope, status: 'pending', progress: 0, message: 'Accepted; waiting for worker status.', error_code: null, blocked_by: [] })) }; renderUpdateOperation(cached); beginUpdateTracking(operation.operation_id, { cached, open: true }); } catch (error) { setText($('#update-progress'), error.message); $('#start-update').disabled = false; } });
+    $('#retry-update').addEventListener('click', async () => { if (!state.updateOperation || !await confirmAction('Retry the failed/partial fixed update steps now? This immediately resumes allowed network/write work and does not wait for code review.', 'Retry failed steps')) return; try { const operation = await requestJson(`/api/r0/actions/${encodeURIComponent(state.updateOperation)}/retry`, { method: 'POST' }); $('#retry-update').hidden = true; const cached = { operation_id: operation.operation_id, kind: 'data-update', status: 'pending', error_code: null, steps: [], created_at: null, finished_at: null }; renderUpdateOperation(cached); beginUpdateTracking(operation.operation_id, { cached, open: true }); } catch (error) { const node = $('#update-operation-error'); showMessage(node, error.message, true); showUpdateProgressDialog(); } });
+    $('#open-update-progress').addEventListener('click', showUpdateProgressDialog);
+    $('#minimize-update-progress').addEventListener('click', () => $('#update-progress-dialog').close());
+    $$('#update-scopes input, #update-force').forEach((input) => input.addEventListener('change', () => { plan = null; state.updatePlanReady = false; $('#start-update').disabled = true; setText($('#update-plan'), 'Selection changed. Preview the fixed plan again before updating.'); }));
     $('#restart-service').addEventListener('click', async () => { if ($('#restart-service').disabled || !await confirmAction('Public-unsafe restart request. A successful 202 is complete only after the boot id changes and health is ready. Confirmation is not access control.', 'Request restart')) return; try { const operation = await requestJson('/api/r0/actions/restart', { method: 'POST' }); setText($('#restart-progress'), `scheduled: ${operation.operation_id}`); pollGeneric(operation.operation_id, $('#restart-progress')); } catch (error) { setText($('#restart-progress'), `${error.body?.error || 'restart_error'}: ${error.message}`); } });
+    const stored = loadUpdateOperation(); if (stored) beginUpdateTracking(stored.operation_id, { cached: stored, open: ['pending', 'running'].includes(stored.status) });
   }
 
   async function initManual() {
