@@ -272,16 +272,20 @@ def _normalize_stock_code(code):
 def _extract_open_stock_codes(result):
     if result is None or len(result) == 0 or '买入个股收益' not in result.columns:
         return []
-    codes = set()
+    latest_open_stocks = None
     for raw in result['买入个股收益']:
         try:
             stocks = json.loads(raw)
         except (json.JSONDecodeError, TypeError):
             continue
-        for stock in stocks or []:
-            code = str(stock.get('code', '')).strip()
-            if code and stock.get('sell_price') is None:
-                codes.add(code)
+        if _is_open_snapshot_period(stocks):
+            latest_open_stocks = stocks
+
+    codes = set()
+    for stock in latest_open_stocks or []:
+        code = str(stock.get('code', '')).strip()
+        if code:
+            codes.add(code)
     return sorted(codes)
 
 
@@ -957,7 +961,9 @@ def result_to_json(result, ev, split_date=SPLIT_DATE, benchmark_id=None, compact
     equity_curve_yearly = _resample_curve(equity_curve, 'year')
 
     # 持仓明细（含个股仓位占比和盈亏）
-    holdings_quote_map = _fetch_open_stock_quotes(result)
+    # compact 是首屏图表请求，后面会删掉持仓明细，不应为了即将删除的
+    # 字段同步等待实时行情网络请求。full payload 仍保留最新未平仓持仓的行情。
+    holdings_quote_map = {} if compact else _fetch_open_stock_quotes(result)
     holdings = _build_holdings_payload(
         result,
         float(result.attrs.get('initial_capital', 100000)),

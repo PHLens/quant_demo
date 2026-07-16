@@ -17,7 +17,12 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from web.serializers import _build_holdings_payload, _is_open_snapshot_period
+from web import serializers
+from web.serializers import (
+    _build_holdings_payload,
+    _extract_open_stock_codes,
+    _is_open_snapshot_period,
+)
 
 
 def _stock(code, sell_price=None, *, weight=1.0, ret=0.0, buy_price=10.0):
@@ -131,3 +136,50 @@ def test_mixed_partial_close_not_treated_as_open_snapshot():
     dates = sorted(h['date'] for h in payload)
     # 两行都应保留（前者不算 open snapshot，后者是唯一的 open snapshot）
     assert dates == ['2025-01-31', '2025-02-28']
+
+
+def test_realtime_quote_codes_only_include_last_open_snapshot():
+    """实时行情与持仓输出使用同一口径：只抓最后一笔 open snapshot。"""
+    df = pd.DataFrame([
+        _row('2025-01-31', [_stock('OLD_A'), _stock('OLD_B')]),
+        _row('2025-02-28', [_stock('MIXED_A', sell_price=11.0), _stock('MIXED_B')]),
+        _row('2025-03-31', [_stock('LATEST_B'), _stock('LATEST_A')]),
+    ])
+
+    assert _extract_open_stock_codes(df) == ['LATEST_A', 'LATEST_B']
+
+
+def test_compact_payload_does_not_fetch_realtime_quotes(monkeypatch):
+    """compact 首屏会删除持仓明细，不得在返回前同步抓行情。"""
+    result = pd.DataFrame([
+        {
+            '交易日期': pd.Timestamp('2025-01-31'),
+            '累积净值': 1.01,
+            '选股下周期涨跌幅': 0.01,
+            '买入个股收益': json.dumps([_stock('LATEST')]),
+        }
+    ])
+    result.attrs['initial_capital'] = 100000.0
+
+    def _unexpected_fetch(_result):
+        raise AssertionError('compact payload must not fetch realtime quotes')
+
+    monkeypatch.setattr(serializers, '_fetch_open_stock_quotes', _unexpected_fetch)
+    monkeypatch.setattr(serializers, '_load_trading_calendar', lambda _benchmark=None: pd.DatetimeIndex([]))
+    monkeypatch.setattr(serializers, '_build_holdings_payload', lambda *args, **kwargs: [{'date': '2025-01-31'}])
+    monkeypatch.setattr(serializers, 'build_selection_interval_windows', lambda *args, **kwargs: {})
+    monkeypatch.setattr(serializers, 'compute_split_metrics', lambda *args, **kwargs: {})
+    monkeypatch.setattr(serializers, '_get_benchmark_series', lambda _benchmark=None: ('csi1000', None))
+    monkeypatch.setattr(serializers, '_compute_single_benchmark_curve_daily', lambda *args, **kwargs: [])
+    monkeypatch.setattr(serializers, '_index_returns_map', lambda: {})
+
+    payload = serializers.result_to_json(
+        result,
+        pd.DataFrame(),
+        split_date=None,
+        benchmark_id='csi1000',
+        compact=True,
+    )
+
+    assert payload['has_holdings'] is True
+    assert payload['holdings'] == []
