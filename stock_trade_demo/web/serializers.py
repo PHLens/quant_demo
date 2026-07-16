@@ -94,6 +94,14 @@ def _get_benchmark_meta(benchmark_id):
     }
 
 
+def _benchmark_ids_for_payload(benchmark_id, compact=False):
+    """compact 首屏只消费当前基准；full payload 保留全部对比基准。"""
+    if compact:
+        normalized_id = _normalize_benchmark_id(benchmark_id)
+        return [normalized_id] if normalized_id is not None else []
+    return list(_index_returns_map())
+
+
 def _infer_market_label(code):
     code = str(code or '').strip()
     digits = ''.join(ch for ch in code if ch.isdigit())
@@ -583,7 +591,13 @@ def _month_start_from_end(end_date, months):
 
 
 # ─── 窗口摘要 / 拆分指标 / 顶级序列化 ───
-def build_selection_interval_windows(result, index_returns=None, benchmark_id=None, quote_map=None):
+def build_selection_interval_windows(
+    result,
+    index_returns=None,
+    benchmark_id=None,
+    quote_map=None,
+    compact=False,
+):
     if len(result) == 0:
         return {}
 
@@ -606,8 +620,6 @@ def build_selection_interval_windows(result, index_returns=None, benchmark_id=No
         pd.to_datetime(dt).strftime('%Y-%m-%d'): curve
         for dt, curve in zip(full_result['交易日期'], period_curves)
     } if period_curves else {}
-
-    index_returns_map = _index_returns_map()
 
     summary = {}
     for name, (start_date, end_date, reset_capital) in windows.items():
@@ -671,7 +683,9 @@ def build_selection_interval_windows(result, index_returns=None, benchmark_id=No
 
         # 近端窗口 benchmark 统一改成日线口径（与择时页一致）
         bm_curves_raw = []
-        for index_id, _series in index_returns_map.items():
+        for index_id in _benchmark_ids_for_payload(benchmark_id, compact=compact):
+            if index_id not in INDEX_CONFIGS:
+                continue
             curve_daily = _compute_single_benchmark_curve_daily(df, index_id, trading_calendar=trading_calendar)
             bm_curves_raw.append({'id': index_id, 'name': INDEX_CONFIGS[index_id]['name'], 'curve': curve_daily})
 
@@ -1000,13 +1014,17 @@ def result_to_json(result, ev, split_date=SPLIT_DATE, benchmark_id=None, compact
         index_returns=active_benchmark_series,
         benchmark_id=active_benchmark_id,
         quote_map=holdings_quote_map,
+        compact=compact,
     )
 
     # 兼容旧结构的临时拆分摘要
-    split = compute_split_metrics(result, split_date,
-                                  index_returns=active_benchmark_series,
-                                  benchmark_id=active_benchmark_id,
-                                  quote_map=holdings_quote_map)
+    split = {} if compact else compute_split_metrics(
+        result,
+        split_date,
+        index_returns=active_benchmark_series,
+        benchmark_id=active_benchmark_id,
+        quote_map=holdings_quote_map,
+    )
 
     # 分别构建训练集和测试集的资金曲线（各自从 1 开始）
     train_curve = []
@@ -1070,7 +1088,9 @@ def result_to_json(result, ev, split_date=SPLIT_DATE, benchmark_id=None, compact
     # 顶部 benchmark summary / 主图的 active benchmark 也统一成日线口径
     benchmark_curve = _compute_single_benchmark_curve_daily(result, active_benchmark_id, trading_calendar=trading_calendar)
     benchmark_curves_raw = []
-    for index_id, _series in _index_returns_map().items():
+    for index_id in _benchmark_ids_for_payload(active_benchmark_id, compact=compact):
+        if index_id not in INDEX_CONFIGS:
+            continue
         benchmark_curves_raw.append({
             'id': index_id,
             'name': INDEX_CONFIGS[index_id]['name'],

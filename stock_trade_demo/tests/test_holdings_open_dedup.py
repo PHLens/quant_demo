@@ -168,7 +168,13 @@ def test_compact_payload_does_not_fetch_realtime_quotes(monkeypatch):
     monkeypatch.setattr(serializers, '_load_trading_calendar', lambda _benchmark=None: pd.DatetimeIndex([]))
     monkeypatch.setattr(serializers, '_build_holdings_payload', lambda *args, **kwargs: [{'date': '2025-01-31'}])
     monkeypatch.setattr(serializers, 'build_selection_interval_windows', lambda *args, **kwargs: {})
-    monkeypatch.setattr(serializers, 'compute_split_metrics', lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        serializers,
+        'compute_split_metrics',
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError('compact payload must skip split metrics')
+        ),
+    )
     monkeypatch.setattr(serializers, '_get_benchmark_series', lambda _benchmark=None: ('csi1000', None))
     monkeypatch.setattr(serializers, '_compute_single_benchmark_curve_daily', lambda *args, **kwargs: [])
     monkeypatch.setattr(serializers, '_index_returns_map', lambda: {})
@@ -192,3 +198,16 @@ def test_explicit_empty_quote_map_does_not_fall_back_to_network(monkeypatch):
 
     monkeypatch.setattr(serializers, '_fetch_open_stock_quotes', _unexpected_fetch)
     assert serializers._resolve_quote_map(pd.DataFrame(), {}) == {}
+
+
+def test_compact_payload_limits_benchmark_ids_to_active(monkeypatch):
+    monkeypatch.setattr(
+        serializers,
+        '_index_returns_map',
+        lambda: {'csi1000': object(), 'chinext': object(), 'star50': object()},
+    )
+
+    assert serializers._benchmark_ids_for_payload('chinext', compact=True) == ['chinext']
+    assert serializers._benchmark_ids_for_payload('chinext', compact=False) == [
+        'csi1000', 'chinext', 'star50',
+    ]
