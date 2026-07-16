@@ -482,10 +482,10 @@ def _check_scope(scope: str) -> dict[str, Any]:
         }
     root = configured_resource_root()
     files = {
-        'index': (root / 'data/_idx_summary.csv', root / 'data/_etf_summary.csv'),
+        'index': (root / '.cache/csi1000_daily.csv', root / '.cache/timing_etf/csi1000_etf_daily_qfq.csv'),
         'aux': (root / 'data/_fred_summary.csv', root / 'strategy/risk_signals.json'),
         'stock': (root / 'stock_trade_demo/stock_data.csv.meta.json', root / 'stock_trade_demo/stock_data.parquet.meta.json'),
-        'factor': (root / 'strategy/backtest_sector_heat.csv',),
+        'factor': (root / 'strategy/sector_weekly_heat.csv',),
     }[scope]
     dates = []
     for file_path in files:
@@ -765,6 +765,7 @@ def _runner(scope: str) -> Callable[[], Any]:
 
 
 def _run_scope(scope: str) -> None:
+    require_resource_root((scope,))
     configured = current_app.config.get('R0_ACTION_RUNNERS') or {}
     runner = _runner(scope)
     runner()

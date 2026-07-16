@@ -29,6 +29,17 @@ FRED_INPUTS = (
     'fred_Treasury10Y.csv',
 )
 MACRO_INPUTS = ('pe_ttm.csv', 'cn10y.csv', 'sse_daily.csv')
+INDEX_DAILY_INPUTS = (
+    'csi1000_daily.csv', 'chinext_daily.csv', 'star50_daily.csv',
+    'nasdaq_daily.csv', 'sp500_daily.csv', 'gold_daily.csv',
+    'hsi_daily.csv', 'hstech_daily.csv',
+)
+ETF_DAILY_INPUTS = (
+    'csi1000_etf_daily_qfq.csv', 'chinext_etf_daily_qfq.csv',
+    'star50_etf_daily_qfq.csv', 'nasdaq_etf_daily_qfq.csv',
+    'sp500_etf_daily_qfq.csv', 'gold_etf_daily_qfq.csv',
+    'hsi_etf_daily_qfq.csv', 'hstech_etf_daily_qfq.csv',
+)
 
 
 def _with_sidecars(directory: Path, names: tuple[str, ...]) -> tuple[Path, ...]:
@@ -41,12 +52,8 @@ def _with_sidecars(directory: Path, names: tuple[str, ...]) -> tuple[Path, ...]:
 
 def production_resource_paths(root: Path) -> dict[str, tuple[Path, ...]]:
     """Exact server-owned files represented by every production resource ID."""
-    index_daily = (
-        root / 'data/_idx_summary.csv', root / 'data/_idx_summary.csv.meta.json',
-    )
-    etf_daily = (
-        root / 'data/_etf_summary.csv', root / 'data/_etf_summary.csv.meta.json',
-    )
+    index_daily = _with_sidecars(root / '.cache', INDEX_DAILY_INPUTS)
+    etf_daily = _with_sidecars(root / '.cache/timing_etf', ETF_DAILY_INPUTS)
     fred = (
         root / 'data/_fred_summary.csv', root / 'data/_fred_summary.csv.meta.json',
         *_with_sidecars(root / 'data', FRED_INPUTS),
@@ -65,8 +72,8 @@ def production_resource_paths(root: Path) -> dict[str, tuple[Path, ...]]:
         root / 'stock_trade_demo/stock_data.parquet.meta.json',
     )
     sector_heat = (
-        root / 'strategy/backtest_sector_heat.csv',
-        root / 'strategy/backtest_sector_heat.csv.meta.json',
+        root / 'strategy/sector_weekly_heat.csv',
+        root / 'strategy/sector_weekly_heat.csv.meta.json',
     )
     return {
         'dataset:index': index_daily + etf_daily,

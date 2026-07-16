@@ -81,6 +81,15 @@ def resource_root_diagnostic(scopes: Iterable[str] = ()) -> dict[str, object]:
             'code': 'resource_root_not_persistent',
             'message': 'The data root must be independent from the active code release.',
         }
+    cache_dir = resolved / '.cache'
+    if (not os.access(resolved, os.R_OK | os.W_OK | os.X_OK)
+            or not cache_dir.is_dir()
+            or not os.access(cache_dir, os.R_OK | os.W_OK | os.X_OK)):
+        return {
+            'ready': False,
+            'code': 'resource_root_unavailable',
+            'message': 'The persistent data root and its .cache directory must be readable and writable.',
+        }
     if 'stock' in set(scopes):
         project = resolved / 'stock_trade_demo'
         invalid = []

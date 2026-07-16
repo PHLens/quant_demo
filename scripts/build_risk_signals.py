@@ -20,14 +20,16 @@ import numpy as np
 import pandas as pd
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_REPO_ROOT = os.path.dirname(_HERE)
-_DEMO_ROOT = os.path.join(_REPO_ROOT, 'stock_trade_demo')
+_CODE_ROOT = os.path.dirname(_HERE)
+_DEMO_ROOT = os.path.join(_CODE_ROOT, 'stock_trade_demo')
 sys.path.insert(0, _DEMO_ROOT)
 from utils.atomic_io import atomic_write_json as _atomic_write_json
-_DATA_DIR = os.path.join(_REPO_ROOT, 'data')
-_DAILY_DIR = os.path.join(_DEMO_ROOT, '.cache')
+_RESOURCE_ROOT = os.path.abspath(os.environ.get('R0_RESOURCE_ROOT') or _CODE_ROOT)
+_DATA_DIR = os.path.join(_RESOURCE_ROOT, 'data')
+_DAILY_DIR = os.path.join(_RESOURCE_ROOT, '.cache')
 _A_SHARE_MACRO_DIR = os.path.join(_DATA_DIR, 'a_share_macro')
-_OUTPUT = os.path.join(_REPO_ROOT, 'strategy', 'risk_signals.json')
+_OUTPUT = os.path.join(_RESOURCE_ROOT, 'strategy', 'risk_signals.json')
+os.makedirs(os.path.dirname(_OUTPUT), exist_ok=True)
 
 # 指数 ID → daily csv 文件名（不含路径）
 _INDEX_DAILY_FILES = {

@@ -3,12 +3,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+import runpy
+import subprocess
+import sys
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 from uuid import uuid4
 
 import pandas as pd
 import pytest
 
+import index_data
+from services import cache_store
+from strategies import sector_heat as sector_heat_strategy
 from web import state
 from web.app import create_app
 from web.v01 import actions, fingerprints, resource_paths
@@ -234,7 +241,11 @@ def test_recovery_publishes_exact_target_and_terminal_status(app, client):
 
 def test_recovery_fences_collateral_when_shared_input_changes(app, client):
     target = _configure_recovery(app, ImmediateThread)
-    fingerprints = {'dataset:index': 'index-v1'}
+    fingerprints = {
+        'dataset:index': 'index-v1',
+        'dataset:index-daily': 'index-daily-v1',
+        'dataset:etf-daily': 'etf-daily-v1',
+    }
     app.config['R0_RESOURCE_FINGERPRINTS'] = fingerprints
     app.config['R0_ACTION_RUNNERS']['index'] = lambda: fingerprints.__setitem__('dataset:index', 'index-v2')
     response = client.post('/api/r0/actions/cache-recover', json=target)
@@ -406,6 +417,7 @@ def test_stock_runner_and_fingerprint_use_persistent_root_not_release(
     persistent_root = tmp_path / 'persistent-data'
     stock_paths = fingerprints.production_resource_paths(persistent_root)['dataset:stock']
     _materialize_resource_paths(stock_paths)
+    (persistent_root / '.cache').mkdir()
     for path, day in (
         (persistent_root / 'stock_trade_demo/stock_data.csv.meta.json', '2026-01-02'),
         (persistent_root / 'stock_trade_demo/stock_data.parquet.meta.json', '2026-01-03'),
@@ -458,6 +470,160 @@ def test_stock_runner_and_fingerprint_use_persistent_root_not_release(
     assert not (release_root / 'stock_trade_demo/stock_data.csv').exists()
     assert state._UPDATE_DATA_STATUS['stage'] == 'done'
     assert state._UPDATE_DATA_STATUS['error'] is None
+
+
+def test_all_scope_paths_bind_to_persistent_root_not_release(
+        config, tmp_path, monkeypatch):
+    release_root = tmp_path / 'release-193bd4a'
+    (release_root / '.cache').mkdir(parents=True)
+    (release_root / 'data').mkdir()
+    (release_root / 'strategy').mkdir()
+    (release_root / 'data/_fred_summary.csv').write_text(
+        'date,value\n2099-12-31,1\n', encoding='utf-8',
+    )
+    monkeypatch.setattr(resource_paths, 'CODE_REPO_ROOT', release_root)
+
+    persistent_root = tmp_path / 'persistent-data'
+    all_paths = fingerprints.production_resource_paths(persistent_root)
+    for paths in all_paths.values():
+        _materialize_resource_paths(paths)
+    (persistent_root / '.cache').mkdir(exist_ok=True)
+    config['R0_RESOURCE_ROOT'] = persistent_root
+    config.pop('R0_RESOURCE_FINGERPRINTS')
+
+    app = create_app(config)
+    client = app.test_client()
+    assert app.extensions['r0_resource_root_diagnostic']['ready'] is True
+    assert Path(index_data.CACHE_DIR) == persistent_root / '.cache'
+    assert Path(index_data.TIMING_ETF_CACHE_DIR) == persistent_root / '.cache/timing_etf'
+    assert Path(cache_store.CACHE_DIR) == persistent_root / '.cache'
+    assert Path(cache_store.WEB_CACHE_FILE) == persistent_root / '.cache/web_cache.pkl'
+    assert Path(state._CACHE_DIR) == persistent_root / '.cache'
+    assert Path(state._RISK_SIGNALS_FILE) == persistent_root / 'strategy/risk_signals.json'
+    assert Path(state._SECTOR_HEAT_FILE) == persistent_root / 'strategy/sector_weekly_heat.csv'
+    assert Path(sector_heat_strategy._HEAT_FILE) == persistent_root / 'strategy/sector_weekly_heat.csv'
+
+    with app.app_context():
+        for resource_id in (
+            'dataset:index', 'dataset:aux', 'dataset:stock', 'dataset:factor',
+        ):
+            assert fingerprints.resource_fingerprint(resource_id) is not None
+    statuses = client.get('/api/r0/data-check').get_json()['scopes']
+    assert {item['scope'] for item in statuses} == {'index', 'aux', 'stock', 'factor'}
+    assert all(item['current_local_date'] != '2099-12-31' for item in statuses)
+    assert not any(release_root in path.parents for paths in all_paths.values() for path in paths)
+
+
+def test_aux_and_factor_subprocesses_write_through_persistent_root(
+        config, tmp_path, monkeypatch):
+    persistent_root = tmp_path / 'persistent-data'
+    _materialize_resource_paths(
+        fingerprints.production_resource_paths(persistent_root)['dataset:stock']
+    )
+    (persistent_root / '.cache').mkdir()
+    (persistent_root / 'data').mkdir(exist_ok=True)
+    (persistent_root / 'strategy').mkdir(exist_ok=True)
+    config['R0_RESOURCE_ROOT'] = persistent_root
+    app = create_app(config)
+    calls = []
+
+    def run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return SimpleNamespace(returncode=0, stdout='', stderr='')
+
+    monkeypatch.setattr(subprocess, 'run', run)
+    with app.app_context():
+        state._run_aux_data_update()
+        state._run_factor_update()
+
+    assert len(calls) == 4
+    for cmd, kwargs in calls:
+        assert Path(kwargs['cwd']) == persistent_root
+        assert Path(kwargs['env']['R0_RESOURCE_ROOT']) == persistent_root
+        assert Path(cmd[1]).parent == Path(state._REPO_ROOT) / 'scripts'
+    assert state._AUX_UPDATE_STATUS['stage'] == 'done'
+    assert state._FACTOR_UPDATE_STATUS['stage'] == 'done'
+
+
+def test_update_scripts_resolve_inputs_and_outputs_from_persistent_root(
+        tmp_path, monkeypatch):
+    persistent_root = tmp_path / 'persistent-data'
+    persistent_root.mkdir()
+    monkeypatch.setenv('R0_RESOURCE_ROOT', str(persistent_root))
+    pandas_datareader = ModuleType('pandas_datareader')
+    pandas_datareader.data = SimpleNamespace()
+    monkeypatch.setitem(sys.modules, 'pandas_datareader', pandas_datareader)
+    monkeypatch.setitem(sys.modules, 'yfinance', ModuleType('yfinance'))
+    scripts = Path(state._REPO_ROOT) / 'scripts'
+
+    macro = runpy.run_path(str(scripts / 'download_macro_data.py'))
+    index = runpy.run_path(str(scripts / 'download_index_data.py'))
+    a_share = runpy.run_path(str(scripts / 'fetch_a_share_macro.py'))
+    risk = runpy.run_path(str(scripts / 'build_risk_signals.py'))
+    factor = runpy.run_path(str(scripts / 'compute_sector_weekly_heat.py'))
+
+    assert Path(macro['DATA_DIR']) == persistent_root / 'data'
+    assert Path(index['DATA_DIR']) == persistent_root / 'data'
+    assert Path(a_share['_OUT_DIR']) == persistent_root / 'data/a_share_macro'
+    assert Path(risk['_DATA_DIR']) == persistent_root / 'data'
+    assert Path(risk['_DAILY_DIR']) == persistent_root / '.cache'
+    assert Path(risk['_OUTPUT']) == persistent_root / 'strategy/risk_signals.json'
+    assert factor['DATA_PATH'] == persistent_root / 'stock_trade_demo/stock_data.parquet'
+    assert factor['OUT_PATH'] == persistent_root / 'strategy/sector_weekly_heat.csv'
+
+
+def test_stock_plus_index_runners_share_persistent_root(
+        config, tmp_path, monkeypatch):
+    persistent_root = tmp_path / 'persistent-data'
+    _materialize_resource_paths(
+        fingerprints.production_resource_paths(persistent_root)['dataset:stock']
+    )
+    (persistent_root / '.cache').mkdir()
+    config['R0_RESOURCE_ROOT'] = persistent_root
+    app = create_app(config)
+    observed = []
+
+    def index_runner():
+        observed.append(('index', Path(index_data.CACHE_DIR)))
+        state._INDEX_UPDATE_STATUS.update(stage='done', error=None)
+
+    def stock_runner():
+        observed.append(('stock', resource_paths.stock_resource_dir()))
+        state._UPDATE_DATA_STATUS.update(stage='done', error=None)
+
+    monkeypatch.setattr(state, '_run_index_data_update', index_runner)
+    monkeypatch.setattr(state, '_run_data_update', stock_runner)
+    monkeypatch.setattr(actions, '_build_fixed_scope_targets', lambda _scope: None)
+    with app.app_context():
+        actions._run_scope('index')
+        actions._run_scope('stock')
+
+    assert observed == [
+        ('index', persistent_root / '.cache'),
+        ('stock', persistent_root / 'stock_trade_demo'),
+    ]
+
+
+def test_missing_persistent_cache_fails_before_update_admission(
+        config, tmp_path):
+    persistent_root = tmp_path / 'persistent-data'
+    _materialize_resource_paths(
+        fingerprints.production_resource_paths(persistent_root)['dataset:stock']
+    )
+    config['R0_RESOURCE_ROOT'] = persistent_root
+    app = create_app(config)
+    client = app.test_client()
+
+    preview = client.get('/api/r0/data-update-plan?scopes=stock,index&force=true')
+    assert preview.status_code == 503
+    assert preview.get_json()['error'] == 'resource_root_unavailable'
+    update = client.post(
+        '/api/r0/actions/data-update',
+        json={'scopes': ['stock', 'index'], 'force': True},
+    )
+    assert update.status_code == 503
+    assert app.extensions['r0_action_runtime'].operations == {}
+    assert not Path(config['R0_ACTION_MARKER_PATH']).exists()
 
 
 def test_current_update_is_a_no_write_no_target_operation(app, client, monkeypatch):
@@ -850,6 +1016,7 @@ def test_macro_csv_change_without_sidecar_invalidates_production_candidate(
     resource_root = tmp_path / 'resource-root'
     resource_paths = fingerprints.production_resource_paths(resource_root)
     _materialize_resource_paths(resource_paths['dataset:aux'])
+    (resource_root / '.cache').mkdir()
     config['R0_RESOURCE_ROOT'] = resource_root
     config.pop('R0_RESOURCE_FINGERPRINTS')
 

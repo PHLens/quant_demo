@@ -12,7 +12,9 @@ from datetime import datetime
 from pandas_datareader import data as pdr
 import yfinance as yf
 
-DATA_DIR = "/Users/fatcat/Desktop/quant/data"
+_CODE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_RESOURCE_ROOT = os.path.abspath(os.environ.get('R0_RESOURCE_ROOT') or _CODE_ROOT)
+DATA_DIR = os.path.join(_RESOURCE_ROOT, 'data')
 os.makedirs(DATA_DIR, exist_ok=True)
 
 START = "2005-01-01"

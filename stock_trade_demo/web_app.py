@@ -26,7 +26,7 @@ from web.app import create_app, start_eager_load_thread
 # 所以必须把这些名字真正放到本 module 的命名空间。
 from web.state import (  # noqa: F401
     TRAINING_CUTOFF, HOLDOUT_START,
-    FACTOR_BACKTEST_CACHE_FILE, FACTOR_BACKTEST_BUILD_SCRIPT,
+    FACTOR_BACKTEST_BUILD_SCRIPT,
     ensure_stock_data_loaded, ensure_us_timing_panel_loaded, ensure_timing_panel_loaded,
     ensure_index_returns_loaded, init_cache, init_timing_cache, init_us_timing_cache,
     run_timing_backtest_fresh, run_backtest_fresh,

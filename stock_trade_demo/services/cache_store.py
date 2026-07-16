@@ -28,6 +28,14 @@ WEB_CACHE_FILE: str = os.path.join(CACHE_DIR, 'web_cache.pkl')
 FACTOR_BACKTEST_CACHE_FILE: str = os.path.join(CACHE_DIR, 'single_factor_results.pkl')
 FACTOR_BACKTEST_BUILD_SCRIPT: str = 'stock_trade_demo/build_single_factor_cache.py'
 
+
+def configure_cache_dir(cache_dir: str) -> None:
+    """Route mutable web caches to the server-owned persistent data root."""
+    global CACHE_DIR, WEB_CACHE_FILE, FACTOR_BACKTEST_CACHE_FILE
+    CACHE_DIR = os.fspath(cache_dir)
+    WEB_CACHE_FILE = os.path.join(CACHE_DIR, 'web_cache.pkl')
+    FACTOR_BACKTEST_CACHE_FILE = os.path.join(CACHE_DIR, 'single_factor_results.pkl')
+
 # ── version + fingerprint ────────────────────────────────────────────
 # CACHE_VERSION: manual lever — bump only for breaking pickle-payload schema
 # changes (added/removed top-level keys, type changes). Code-content shifts

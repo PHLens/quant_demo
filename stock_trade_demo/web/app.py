@@ -15,7 +15,7 @@ from web.blueprints import pages, v01_api
 from web.v01.actions import init_runtime
 from web.v01.contracts import ApiError
 from web.v01.operation_log import append_request_result
-from web.v01.resource_paths import resource_root_diagnostic
+from web.v01.resource_paths import configured_resource_root, resource_root_diagnostic
 
 
 def _sanitize_nan_for_json(obj):
@@ -60,10 +60,12 @@ def create_app(config: Mapping[str, Any] | None = None) -> Flask:
     # insertion order built by each projection instead of Flask's lexical sort.
     app.json.sort_keys = False
 
+    app.config['R0_RESOURCE_ROOT'] = os.environ.get('R0_RESOURCE_ROOT')
     if config:
         app.config.update(config)
     app.config.setdefault('R0_OPERATION_LOG_PATH', Path(app.instance_path) / 'r0-operation-log.jsonl')
     with app.app_context():
+        state.configure_resource_root(configured_resource_root())
         app.extensions['r0_resource_root_diagnostic'] = resource_root_diagnostic(('stock',))
 
     init_runtime(app)

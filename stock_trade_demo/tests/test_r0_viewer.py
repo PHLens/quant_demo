@@ -23,6 +23,10 @@ def app(tmp_path):
         R0_MANUAL_LEDGER_PATH=tmp_path / 'manual.csv',
         R0_ACTION_MARKER_PATH=tmp_path / 'active-operation.json',
         R0_CURSOR_KEY='test-cursor-key',
+        R0_RESOURCE_FINGERPRINTS={
+            'dataset:index-daily': 'fixture:index-daily',
+            'dataset:etf-daily': 'fixture:etf-daily',
+        },
     )
     return app
 

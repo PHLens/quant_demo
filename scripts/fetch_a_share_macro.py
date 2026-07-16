@@ -26,11 +26,11 @@ from typing import Optional
 import pandas as pd
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_REPO_ROOT_SCRIPTS = os.path.dirname(_HERE)
-sys.path.insert(0, os.path.join(_REPO_ROOT_SCRIPTS, 'stock_trade_demo'))
+_CODE_ROOT = os.path.dirname(_HERE)
+sys.path.insert(0, os.path.join(_CODE_ROOT, 'stock_trade_demo'))
 from utils.atomic_io import atomic_write_csv as _atomic_write_csv
-_REPO_ROOT = os.path.dirname(_HERE)
-_OUT_DIR = os.path.join(_REPO_ROOT, 'data', 'a_share_macro')
+_RESOURCE_ROOT = os.path.abspath(os.environ.get('R0_RESOURCE_ROOT') or _CODE_ROOT)
+_OUT_DIR = os.path.join(_RESOURCE_ROOT, 'data', 'a_share_macro')
 os.makedirs(_OUT_DIR, exist_ok=True)
 
 _PE_FILE = os.path.join(_OUT_DIR, 'pe_ttm.csv')

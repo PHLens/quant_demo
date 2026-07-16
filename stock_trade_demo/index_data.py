@@ -56,6 +56,14 @@ CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.cache')
 TIMING_ETF_CACHE_DIR = os.path.join(CACHE_DIR, 'timing_etf')
 A_SHARE_CALENDAR_CACHE_FILE = os.path.join(CACHE_DIR, 'a_share_calendar_daily.csv')
 
+
+def configure_cache_dir(cache_dir):
+    """Route all index/ETF reads and writes to the configured data cache."""
+    global CACHE_DIR, TIMING_ETF_CACHE_DIR, A_SHARE_CALENDAR_CACHE_FILE
+    CACHE_DIR = os.fspath(cache_dir)
+    TIMING_ETF_CACHE_DIR = os.path.join(CACHE_DIR, 'timing_etf')
+    A_SHARE_CALENDAR_CACHE_FILE = os.path.join(CACHE_DIR, 'a_share_calendar_daily.csv')
+
 INDEX_CONFIGS = {
     'csi1000': {
         'name': 'CSI 1000',

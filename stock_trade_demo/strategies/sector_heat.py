@@ -23,6 +23,13 @@ _HEAT_FILE = os.path.normpath(
 _heat_cache = {'mtime': 0, 'monthly': None}
 
 
+def configure_resource_root(root):
+    """Point the strategy's derived-data reader at the persistent root."""
+    global _HEAT_FILE
+    _HEAT_FILE = os.path.join(os.fspath(root), 'strategy', 'sector_weekly_heat.csv')
+    _heat_cache.update(mtime=0, monthly=None)
+
+
 def _load_monthly_heat():
     """懒加载 sector_weekly_heat.csv 并聚合为月度分位（带文件变更检测）。"""
     try:

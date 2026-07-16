@@ -11,18 +11,20 @@
   python scripts/compute_sector_weekly_heat.py
 """
 
-import ast, math, sys, warnings
+import ast, math, os, sys, warnings
 import numpy as np
 import pandas as pd
 from pathlib import Path
 
 warnings.filterwarnings("ignore")
 
-ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(ROOT / 'stock_trade_demo'))
+CODE_ROOT = Path(__file__).parent.parent
+RESOURCE_ROOT = Path(os.environ.get('R0_RESOURCE_ROOT') or CODE_ROOT).expanduser().resolve()
+sys.path.insert(0, str(CODE_ROOT / 'stock_trade_demo'))
 from utils.atomic_io import atomic_write_csv as _atomic_write_csv
-DATA_PATH = ROOT / "stock_trade_demo" / "stock_data.parquet"
-OUT_PATH = ROOT / "strategy" / "sector_weekly_heat.csv"
+DATA_PATH = RESOURCE_ROOT / "stock_trade_demo" / "stock_data.parquet"
+OUT_PATH = RESOURCE_ROOT / "strategy" / "sector_weekly_heat.csv"
+OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 INDUSTRY_COL = "新版申万一级行业名称"
 DAYS_PER_WEEK = 5

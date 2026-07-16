@@ -32,6 +32,7 @@ if _REPO_ROOT not in sys.path:
 import csv as _csv
 from datetime import datetime as _datetime
 from utils.atomic_io import atomic_write_parquet
+import index_data as _index_data
 from get_stock_info import (
     supplement_csv as _supplement_csv,
     supplement_csv_incremental as _supplement_csv_incremental,
@@ -48,6 +49,7 @@ from strategies.chan_only import ChanOnlyStrategy  # noqa: F401
 from strategies.method_a import MethodAStrategy  # noqa: F401
 from strategies.quality_value import QualityValueStrategy  # noqa: F401
 from strategies.sector_heat import SectorHeatStrategy  # noqa: F401
+from strategies import sector_heat as _sector_heat_strategy
 from strategies.base import (
     STRATEGY_REGISTRY,
     TIMING_REGISTRY,
@@ -222,6 +224,29 @@ _CACHE_DIR = _cache_store.CACHE_DIR
 _CACHE_FILE = _cache_store.WEB_CACHE_FILE
 FACTOR_BACKTEST_CACHE_FILE = _cache_store.FACTOR_BACKTEST_CACHE_FILE
 FACTOR_BACKTEST_BUILD_SCRIPT = _cache_store.FACTOR_BACKTEST_BUILD_SCRIPT
+
+
+def configure_resource_root(root) -> None:
+    """Bind every mutable/read-through data path to one persistent root."""
+    global _BEST_PROFILE_DIR, _RISK_SIGNALS_FILE
+    global _CACHE_DIR, _CACHE_FILE, FACTOR_BACKTEST_CACHE_FILE, _SECTOR_HEAT_FILE
+
+    root = os.path.abspath(os.fspath(root))
+    cache_dir = os.path.join(root, '.cache')
+    _cache_store.configure_cache_dir(cache_dir)
+    _index_data.configure_cache_dir(cache_dir)
+    _sector_heat_strategy.configure_resource_root(root)
+
+    _BEST_PROFILE_DIR = os.path.join(root, 'strategy')
+    _RISK_SIGNALS_FILE = os.path.join(_BEST_PROFILE_DIR, 'risk_signals.json')
+    _CACHE_DIR = _cache_store.CACHE_DIR
+    _CACHE_FILE = _cache_store.WEB_CACHE_FILE
+    FACTOR_BACKTEST_CACHE_FILE = _cache_store.FACTOR_BACKTEST_CACHE_FILE
+    _SECTOR_HEAT_FILE = os.path.join(root, 'strategy', 'sector_weekly_heat.csv')
+    _BEST_PROFILE_CACHE.clear()
+    _HOLDOUT_REPORT_CACHE.clear()
+    _RISK_SIGNALS_CACHE.update(mtime=0, data=None)
+    _SECTOR_HEAT_CACHE.update(mtime=0, data=None)
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -1718,7 +1743,7 @@ def _check_aux_data_freshness():
 
     # FRED 数据：data/fred_VIX.csv 是高频典型代表（每日发布）。允许滞后 1 天。
     # A 股估值/情绪：data/a_share_macro/pe_ttm.csv 是每日。允许 0 天滞后。
-    repo_root = os.path.dirname(_PROJECT_ROOT)
+    repo_root = os.fspath(configured_resource_root())
     targets = [
         ('fred_vix', os.path.join(repo_root, 'data', 'fred_VIX.csv'), 1),
         ('fred_ust10y', os.path.join(repo_root, 'data', 'fred_Treasury10Y.csv'), 1),
@@ -1790,8 +1815,8 @@ def _run_aux_data_update():
     status['progress_pct'] = 0
     status['message'] = '准备启动辅助数据刷新...'
 
-    repo_root = os.path.dirname(_PROJECT_ROOT)
-    scripts_dir = os.path.join(repo_root, 'scripts')
+    resource_root = os.fspath(configured_resource_root())
+    scripts_dir = os.path.join(_REPO_ROOT, 'scripts')
     py = sys.executable
     pipeline = [
         ('fred_macro', os.path.join(scripts_dir, 'download_macro_data.py'),
@@ -1816,6 +1841,7 @@ def _run_aux_data_update():
             sub_env = os.environ.copy()
             existing_pp = sub_env.get('PYTHONPATH', '')
             sub_env['PYTHONPATH'] = _PROJECT_ROOT + (os.pathsep + existing_pp if existing_pp else '')
+            sub_env['R0_RESOURCE_ROOT'] = resource_root
             cmd = [py, script_path]
             if stage_id == 'fred_macro':
                 # Yahoo Finance `data/yf_*.csv` 仅研究用途，不参与 live 风险面板或生产策略；
@@ -1823,7 +1849,7 @@ def _run_aux_data_update():
                 cmd.append('--skip-yf')
             proc = subprocess.run(
                 cmd,
-                cwd=repo_root,
+                cwd=resource_root,
                 capture_output=True,
                 text=True,
                 env=sub_env,
@@ -1869,8 +1895,8 @@ def _run_factor_update():
     status['progress_pct'] = 0
     status['message'] = '准备启动衍生因子重算...'
 
-    repo_root = os.path.dirname(_PROJECT_ROOT)
-    scripts_dir = os.path.join(repo_root, 'scripts')
+    resource_root = os.fspath(configured_resource_root())
+    scripts_dir = os.path.join(_REPO_ROOT, 'scripts')
     py = sys.executable
     pipeline = [
         ('sector_weekly_heat', os.path.join(scripts_dir, 'compute_sector_weekly_heat.py'),
@@ -1888,9 +1914,10 @@ def _run_factor_update():
             sub_env = os.environ.copy()
             existing_pp = sub_env.get('PYTHONPATH', '')
             sub_env['PYTHONPATH'] = _PROJECT_ROOT + (os.pathsep + existing_pp if existing_pp else '')
+            sub_env['R0_RESOURCE_ROOT'] = resource_root
             proc = subprocess.run(
                 [py, script_path],
-                cwd=repo_root,
+                cwd=resource_root,
                 capture_output=True,
                 text=True,
                 env=sub_env,
@@ -1964,7 +1991,11 @@ def _check_factor_data_freshness():
     expected_ym = None
     try:
         from backtest import load_data as _load_data
-        df_stock = _load_data()
+        stock_dir = stock_resource_dir()
+        stock_path = stock_dir / 'stock_data.parquet'
+        if not stock_path.exists():
+            stock_path = stock_dir / 'stock_data.csv'
+        df_stock = _load_data(os.fspath(stock_path))
         if df_stock is not None and len(df_stock):
             stock_max = pd.to_datetime(df_stock['交易日期']).max()
             # sector_weekly_heat 的 year_month = (snapshot 月份) + 1（因为读的是 "下周期每天涨跌幅"）。
