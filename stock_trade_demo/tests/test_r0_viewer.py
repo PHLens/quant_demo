@@ -108,6 +108,24 @@ def test_four_canonical_pages_share_navigation_and_public_warning(client, path):
     assert not re.search(r'API.?key|paper trading|testnet|scheduler', html, re.I)
 
 
+def test_bootstrap_blocked_recovery_button_is_visually_hidden(client):
+    variant = client.get(
+        '/api/r0/sources/selection/strategies/original_ensemble/variants'
+    ).get_json()['items'][0]
+    assert variant['blocker_code'] == 'bootstrap_required'
+    assert variant['recoverable_now'] is False
+
+    html = client.get('/snapshots').get_data(as_text=True)
+    javascript = client.get('/static/js/r0.js').get_data(as_text=True)
+    stylesheet = client.get('/static/css/r0.css').get_data(as_text=True)
+    assert 'id="recover-cache"' in html
+    assert "$('#recover-cache').hidden = !variant.recovery_supported || !variant.recoverable_now" in javascript
+    assert re.search(
+        r'\[hidden\]\s*\{[^}]*display\s*:\s*none\s*!important\s*;',
+        stylesheet,
+    )
+
+
 def test_only_canonical_api_blueprint_is_registered(app, client):
     rules = list(app.url_map.iter_rules())
     api_rules = [rule for rule in rules if rule.rule.startswith('/api/')]

@@ -18,6 +18,11 @@
 
 * { box-sizing: border-box; }
 
+/* Author display rules (for example .button { display: inline-flex }) outrank
+   the browser's default [hidden] rule. Keep dynamic recovery/action controls
+   truly non-interactive when the application marks them hidden. */
+[hidden] { display: none !important; }
+
 html { background: var(--canvas); }
 
 body {
