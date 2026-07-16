@@ -216,12 +216,19 @@ def _is_open_snapshot_period(raw_stocks):
     return bool(raw_stocks) and all(stock.get('sell_price') is None for stock in raw_stocks)
 
 
-def _build_daily_curve_slice(result_df, full_daily_curve, base_value=1.0, trading_calendar=None):
+def _build_daily_curve_slice(
+    result_df,
+    full_daily_curve,
+    base_value=1.0,
+    trading_calendar=None,
+    period_curves=None,
+):
     """按结果区间切分并重置日线净值基准。"""
     if not full_daily_curve or len(result_df) == 0:
         return []
 
-    period_curves = result_df.attrs.get('period_daily_curves', [])
+    if period_curves is None:
+        period_curves = result_df.attrs.get('period_daily_curves', [])
     if period_curves:
         daily_curve = []
         running_value = float(base_value)
@@ -390,12 +397,19 @@ def _build_stock_payload(raw_stock, cap_per_stock, period_capital, stock_count, 
     }
 
 
-def _build_holdings_payload(df, default_capital, quote_map=None, trading_calendar=None):
+def _build_holdings_payload(
+    df,
+    default_capital,
+    quote_map=None,
+    trading_calendar=None,
+    period_curves=None,
+):
     holdings = []
     if df is None or len(df) == 0:
         return holdings
     quote_map = quote_map or {}
-    period_curves = df.attrs.get('period_daily_curves', [])
+    if period_curves is None:
+        period_curves = df.attrs.get('period_daily_curves', [])
     last_open_snapshot_idx = None
     for row_idx, (_, row) in enumerate(df.iterrows()):
         raw_stocks = []
@@ -488,7 +502,12 @@ def _compute_single_benchmark_curve(result, index_returns):
     return bm
 
 
-def _compute_single_benchmark_curve_daily(result, benchmark_id, trading_calendar=None):
+def _compute_single_benchmark_curve_daily(
+    result,
+    benchmark_id,
+    trading_calendar=None,
+    daily_curve=None,
+):
     """近端验证窗口的 benchmark 曲线统一改为日线口径。
 
     设计原因：选股页近一月/近一季/近半年若继续用 INDEX_RETURNS_MAP 月度收益序列，
@@ -497,7 +516,8 @@ def _compute_single_benchmark_curve_daily(result, benchmark_id, trading_calendar
       - A股 benchmark: 指数日线 close（csi1000/chinext/star50）
       - 美股代理 benchmark: ETF 日线 qfq close（nasdaq/sp500）
     """
-    daily_curve = result.attrs.get('daily_equity_curve', []) if hasattr(result, 'attrs') else []
+    if daily_curve is None:
+        daily_curve = result.attrs.get('daily_equity_curve', []) if hasattr(result, 'attrs') else []
     if not daily_curve:
         return []
     dates = [pd.to_datetime(x['date']) for x in daily_curve if x.get('date')]
@@ -597,12 +617,17 @@ def build_selection_interval_windows(
     benchmark_id=None,
     quote_map=None,
     compact=False,
+    result_attrs=None,
 ):
     if len(result) == 0:
         return {}
 
+    if result_attrs is None:
+        result_attrs = result.attrs if hasattr(result, 'attrs') else {}
     trading_calendar = _load_trading_calendar(benchmark_id)
-    full_result = result.copy().reset_index(drop=True)
+    # pandas 会在每次 slice/copy 时 deepcopy DataFrame.attrs。回测 attrs 含数万个
+    # 日线 dict，会让 compact 首屏白白耗时数十秒。数据帧与 attrs 分离传递。
+    full_result = pd.DataFrame.from_records(result.to_records(index=False))
     full_start = pd.to_datetime(full_result['交易日期'].min())
     full_end = pd.to_datetime(full_result['交易日期'].max())
     recent_6m_start = _month_start_from_end(full_end, 6)
@@ -614,8 +639,9 @@ def build_selection_interval_windows(
         'recent_1m': (_month_start_from_end(full_end, 1), full_end, True),
     }
 
-    initial_capital = float(full_result.attrs.get('initial_capital', 100000))
-    period_curves = full_result.attrs.get('period_daily_curves', [])
+    initial_capital = float(result_attrs.get('initial_capital', 100000))
+    period_curves = result_attrs.get('period_daily_curves', [])
+    full_daily_curve = result_attrs.get('daily_equity_curve', [])
     curve_lookup = {
         pd.to_datetime(dt).strftime('%Y-%m-%d'): curve
         for dt, curve in zip(full_result['交易日期'], period_curves)
@@ -642,8 +668,9 @@ def build_selection_interval_windows(
             }
             continue
 
+        window_period_curves = []
         if curve_lookup:
-            df.attrs['period_daily_curves'] = [
+            window_period_curves = [
                 curve_lookup.get(pd.to_datetime(dt).strftime('%Y-%m-%d'), [])
                 for dt in df['交易日期']
             ]
@@ -679,14 +706,28 @@ def build_selection_interval_windows(
                 initial_capital,
                 quote_map=_resolve_quote_map(df, quote_map),
                 trading_calendar=trading_calendar,
+                period_curves=window_period_curves,
             )
+
+        # 持仓期结束日期：取 daily_equity_curve 末端（最后一个交易日）作为展示 end。
+        daily_eq_this = _build_daily_curve_slice(
+            df,
+            full_daily_curve,
+            trading_calendar=trading_calendar,
+            period_curves=window_period_curves,
+        )
 
         # 近端窗口 benchmark 统一改成日线口径（与择时页一致）
         bm_curves_raw = []
         for index_id in _benchmark_ids_for_payload(benchmark_id, compact=compact):
             if index_id not in INDEX_CONFIGS:
                 continue
-            curve_daily = _compute_single_benchmark_curve_daily(df, index_id, trading_calendar=trading_calendar)
+            curve_daily = _compute_single_benchmark_curve_daily(
+                df,
+                index_id,
+                trading_calendar=trading_calendar,
+                daily_curve=daily_eq_this,
+            )
             bm_curves_raw.append({'id': index_id, 'name': INDEX_CONFIGS[index_id]['name'], 'curve': curve_daily})
 
         df_final_val = float(df['累积净值'].iloc[-1]) if len(df) > 0 else 1.0
@@ -704,12 +745,6 @@ def build_selection_interval_windows(
                 'excess_return_pct': excess_pct,
             })
 
-        # 持仓期结束日期：取 daily_equity_curve 末端（最后一个交易日）作为展示 end，
-        # 而不是最后一次换仓 canonical date。后者是"选股日"，前者才是"持仓结束日"。
-        # 例如：选股日 2026-04-30，持仓穿越 5 月，日线末端是 2026-05-26 → 应展示 5/26。
-        daily_eq_this = _build_daily_curve_slice(df, result.attrs.get('daily_equity_curve', []), trading_calendar=trading_calendar)
-        # 关键：后续 benchmark helper 也要用当前窗口切出来的日线日期，而不是 full result 的 attrs
-        df.attrs['daily_equity_curve'] = daily_eq_this
         if daily_eq_this:
             _holding_end = daily_eq_this[-1]['date']
         else:
@@ -772,7 +807,7 @@ def build_selection_interval_windows(
                 }
                 for _, r in df.iterrows()
             ], 'year'),
-            'daily_equity_curve': _build_daily_curve_slice(df, result.attrs.get('daily_equity_curve', []), trading_calendar=trading_calendar),
+            'daily_equity_curve': daily_eq_this,
             'holdings': holdings,
             'benchmark_curves': benchmark_curves,
         }
@@ -780,7 +815,14 @@ def build_selection_interval_windows(
     return summary
 
 
-def compute_split_metrics(result, split_date=SPLIT_DATE, index_returns=None, benchmark_id=None, quote_map=None):
+def compute_split_metrics(
+    result,
+    split_date=SPLIT_DATE,
+    index_returns=None,
+    benchmark_id=None,
+    quote_map=None,
+    result_attrs=None,
+):
     """
     将回测结果拆分为训练集和测试集，分别计算指标。
 
@@ -798,33 +840,38 @@ def compute_split_metrics(result, split_date=SPLIT_DATE, index_returns=None, ben
     if split_date is None or pd.isna(split_date):
         return {'train': None, 'test': None, 'split_date': None}
 
+    if result_attrs is None:
+        result_attrs = result.attrs if hasattr(result, 'attrs') else {}
     trading_calendar = _load_trading_calendar(benchmark_id)
     train = result[result['交易日期'] <= split_date].copy()
     test = result[result['交易日期'] > split_date].copy()
 
-    full_period_curves = result.attrs.get('period_daily_curves', [])
+    full_period_curves = result_attrs.get('period_daily_curves', [])
+    full_daily_curve = result_attrs.get('daily_equity_curve', [])
+    train_period_curves = []
+    test_period_curves = []
     if full_period_curves:
         period_curve_lookup = {
             pd.to_datetime(dt).strftime('%Y-%m-%d'): curve
             for dt, curve in zip(result['交易日期'], full_period_curves)
         }
-        train.attrs['period_daily_curves'] = [
+        train_period_curves = [
             period_curve_lookup.get(pd.to_datetime(dt).strftime('%Y-%m-%d'), [])
             for dt in train['交易日期']
         ]
-        test.attrs['period_daily_curves'] = [
+        test_period_curves = [
             period_curve_lookup.get(pd.to_datetime(dt).strftime('%Y-%m-%d'), [])
             for dt in test['交易日期']
         ]
 
     # 确定初始本金
-    initial_capital = result.attrs.get('initial_capital', 100000)
+    initial_capital = result_attrs.get('initial_capital', 100000)
     if '当期本金' in result.columns and len(result) > 0:
         initial_capital = result['当期本金'].iloc[0]
 
     index_returns_map = _index_returns_map()
 
-    def compute_period(df, start_capital, include_holdings=False):
+    def compute_period(df, start_capital, include_holdings=False, period_curves=None):
         if len(df) == 0:
             return None, start_capital
         df = df.copy()
@@ -868,7 +915,12 @@ def compute_split_metrics(result, split_date=SPLIT_DATE, index_returns=None, ben
             'win_rate': win_rate,
             'months': len(df),
             'monthly_returns': monthly,
-            'daily_equity_curve': _build_daily_curve_slice(df, result.attrs.get('daily_equity_curve', []), trading_calendar=trading_calendar),
+            'daily_equity_curve': _build_daily_curve_slice(
+                df,
+                full_daily_curve,
+                trading_calendar=trading_calendar,
+                period_curves=period_curves,
+            ),
             'initial_capital': start_capital,
             'final_capital': final_capital,
             'date_range': {
@@ -883,6 +935,7 @@ def compute_split_metrics(result, split_date=SPLIT_DATE, index_returns=None, ben
                 start_capital,
                 quote_map=_resolve_quote_map(df, quote_map),
                 trading_calendar=trading_calendar,
+                period_curves=period_curves,
             )
 
         # ── 归因指标 ──
@@ -921,10 +974,15 @@ def compute_split_metrics(result, split_date=SPLIT_DATE, index_returns=None, ben
 
         return period_result, final_capital
 
-    train_result, train_final_cap = compute_period(train, initial_capital)
+    train_result, train_final_cap = compute_period(
+        train,
+        initial_capital,
+        period_curves=train_period_curves,
+    )
     test_result, _ = compute_period(test,
                                     train_final_cap if train_final_cap is not None else initial_capital,
-                                    include_holdings=True)
+                                    include_holdings=True,
+                                    period_curves=test_period_curves)
 
     return {
         'train': train_result,
@@ -936,6 +994,11 @@ def compute_split_metrics(result, split_date=SPLIT_DATE, index_returns=None, ben
 
 def result_to_json(result, ev, split_date=SPLIT_DATE, benchmark_id=None, compact=False):
     """将回测结果 DataFrame 转为前端 JSON，包含训练/测试集拆分"""
+    result_attrs = result.attrs if hasattr(result, 'attrs') else {}
+    # 将巨大的 daily/period curve attrs 与 DataFrame 运算分离。pandas 会在每次
+    # slice/Series 派生时 deepcopy attrs，原实现因此产生数千万次 copy 调用。
+    result = pd.DataFrame.from_records(result.to_records(index=False))
+
     # 资金曲线（倍数）
     equity_curve = [{'date': r['交易日期'].strftime('%Y-%m-%d'),
                      'value': round(float(r['累积净值']), 4),
@@ -973,9 +1036,12 @@ def result_to_json(result, ev, split_date=SPLIT_DATE, benchmark_id=None, compact
                 'value': round(float(r['选股下周期涨跌幅']), 6)}
                for _, r in result.iterrows()]
     trading_calendar = _load_trading_calendar(benchmark_id)
-    daily_equity_curve = _build_daily_curve_slice(result, result.attrs.get('daily_equity_curve', []), trading_calendar=trading_calendar)
-    # 顶部主 payload 的 benchmark 也必须使用当前过滤结果的日线曲线日期，而不是 full attrs
-    result.attrs['daily_equity_curve'] = daily_equity_curve
+    daily_equity_curve = _build_daily_curve_slice(
+        result,
+        result_attrs.get('daily_equity_curve', []),
+        trading_calendar=trading_calendar,
+        period_curves=result_attrs.get('period_daily_curves', []),
+    )
 
     # 预计算各分辨率曲线（月线为原始数据，季线/年线由后端重采样）
     equity_curve_quarterly = _resample_curve(equity_curve, 'quarter')
@@ -987,9 +1053,10 @@ def result_to_json(result, ev, split_date=SPLIT_DATE, benchmark_id=None, compact
     holdings_quote_map = {} if compact else _fetch_open_stock_quotes(result)
     holdings = _build_holdings_payload(
         result,
-        float(result.attrs.get('initial_capital', 100000)),
+        float(result_attrs.get('initial_capital', 100000)),
         quote_map=holdings_quote_map,
         trading_calendar=trading_calendar,
+        period_curves=result_attrs.get('period_daily_curves', []),
     ) if '买入个股收益' in result.columns else []
 
     def g(m):
@@ -1004,7 +1071,7 @@ def result_to_json(result, ev, split_date=SPLIT_DATE, benchmark_id=None, compact
         return text
 
     # 初始本金和费率信息
-    initial_capital = float(result.attrs.get('initial_capital', 100000))
+    initial_capital = float(result_attrs.get('initial_capital', 100000))
 
     active_benchmark_id, active_benchmark_series = _get_benchmark_series(benchmark_id)
 
@@ -1015,6 +1082,7 @@ def result_to_json(result, ev, split_date=SPLIT_DATE, benchmark_id=None, compact
         benchmark_id=active_benchmark_id,
         quote_map=holdings_quote_map,
         compact=compact,
+        result_attrs=result_attrs,
     )
 
     # 兼容旧结构的临时拆分摘要
@@ -1024,6 +1092,7 @@ def result_to_json(result, ev, split_date=SPLIT_DATE, benchmark_id=None, compact
         index_returns=active_benchmark_series,
         benchmark_id=active_benchmark_id,
         quote_map=holdings_quote_map,
+        result_attrs=result_attrs,
     )
 
     # 分别构建训练集和测试集的资金曲线（各自从 1 开始）
@@ -1080,13 +1149,18 @@ def result_to_json(result, ev, split_date=SPLIT_DATE, benchmark_id=None, compact
     test_curve_yearly = _resample_curve(test_curve, 'year')
 
     profile_summary = []
-    strategy_meta = result.attrs.get('strategy_meta', {}) if hasattr(result, 'attrs') else {}
+    strategy_meta = result_attrs.get('strategy_meta', {})
     if isinstance(strategy_meta, dict):
         profile_summary = strategy_meta.get('profile_summary', []) or []
 
     # 基准曲线及超额收益
     # 顶部 benchmark summary / 主图的 active benchmark 也统一成日线口径
-    benchmark_curve = _compute_single_benchmark_curve_daily(result, active_benchmark_id, trading_calendar=trading_calendar)
+    benchmark_curve = _compute_single_benchmark_curve_daily(
+        result,
+        active_benchmark_id,
+        trading_calendar=trading_calendar,
+        daily_curve=daily_equity_curve,
+    )
     benchmark_curves_raw = []
     for index_id in _benchmark_ids_for_payload(active_benchmark_id, compact=compact):
         if index_id not in INDEX_CONFIGS:
@@ -1094,7 +1168,12 @@ def result_to_json(result, ev, split_date=SPLIT_DATE, benchmark_id=None, compact
         benchmark_curves_raw.append({
             'id': index_id,
             'name': INDEX_CONFIGS[index_id]['name'],
-            'curve': _compute_single_benchmark_curve_daily(result, index_id, trading_calendar=trading_calendar),
+            'curve': _compute_single_benchmark_curve_daily(
+                result,
+                index_id,
+                trading_calendar=trading_calendar,
+                daily_curve=daily_equity_curve,
+            ),
         })
     strategy_final = equity_curve[-1]['value'] if equity_curve else 1.0
     benchmark_curves = []
@@ -1169,12 +1248,12 @@ def result_to_json(result, ev, split_date=SPLIT_DATE, benchmark_id=None, compact
         },
         'initial_capital': initial_capital,
         'fee_info': {
-            'c_rate': result.attrs.get('c_rate', 1.0 / 10000),
-            't_rate': result.attrs.get('t_rate', 1 / 1000),
-            'sell_cost': result.attrs.get('sell_cost', 1.0 / 10000 + 1 / 1000),
-            'total_buy_fees': round(result.attrs.get('total_buy_fees', 0), 2),
-            'total_sell_fees': round(result.attrs.get('total_sell_fees', 0), 2),
-            'total_fees': round(result.attrs.get('total_fees', 0), 2),
+            'c_rate': result_attrs.get('c_rate', 1.0 / 10000),
+            't_rate': result_attrs.get('t_rate', 1 / 1000),
+            'sell_cost': result_attrs.get('sell_cost', 1.0 / 10000 + 1 / 1000),
+            'total_buy_fees': round(result_attrs.get('total_buy_fees', 0), 2),
+            'total_sell_fees': round(result_attrs.get('total_sell_fees', 0), 2),
+            'total_fees': round(result_attrs.get('total_fees', 0), 2),
         },
         'win_rate': round(float((result['选股下周期涨跌幅'] > 0).mean()), 4),
         'date_range': {
