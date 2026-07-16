@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import fcntl
 import hashlib
 import json
 import os
@@ -16,8 +17,16 @@ from uuid import uuid4
 from flask import Flask, current_app
 
 from web import state
-from web.v01.catalog import SCOPE_ORDER, find_variant, get_strategy, recovery_plan_id
+from web.v01.catalog import (
+    SCOPE_ORDER, find_variant, get_strategy, recovery_plan_id,
+    target_dependency_scopes,
+)
 from web.v01.contracts import ApiError, canonical_json, utc_now
+from web.v01.fingerprints import (
+    fingerprint_set_digest, fingerprints_are_known,
+    resource_fingerprint as production_resource_fingerprint,
+    target_input_fingerprints, target_input_resources,
+)
 from web.v01.snapshot_store import (
     PUBLISHED_SIGNAL_KEYS, inspect_target, load_snapshot, pointer_value,
     publish_entry, target_fence, write_target_fence,
@@ -34,7 +43,7 @@ PUBLIC_UNSAFE_WARNING = (
     'Public unsafe mode: any internet user or bot can view capital, position and notes; '
     'create or irreversibly delete Manual records without identity; repeatedly pull data '
     'or rebuild caches to consume upstream, CPU and disk; and request service restart. '
-    'POST, confirmation, 409 conflicts and the process lock prevent mistakes/concurrency only; '
+    'POST, confirmation, conflicts and the cross-process mutation lock prevent mistakes/concurrency only; '
     'they are not access control or a recovery guarantee. Partial non-atomic upstream updates '
     'can leave mixed old/new cache inputs.'
 )
@@ -48,9 +57,33 @@ class GateOwner:
 
 
 class MutationGate:
-    def __init__(self):
+    def __init__(self, lock_path: Path):
         self._lock = threading.RLock()
+        self._lock_path = lock_path
         self._owner: GateOwner | None = None
+        self._descriptor: int | None = None
+
+    def _acquire_os_lock(self) -> int | None:
+        try:
+            self._lock_path.parent.mkdir(parents=True, exist_ok=True)
+            descriptor = os.open(self._lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        except OSError as exc:
+            raise ApiError(
+                503, 'mutation_lock_unavailable',
+                'The cross-process mutation lock cannot be opened safely.',
+            ) from exc
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return descriptor
+        except BlockingIOError:
+            os.close(descriptor)
+            return None
+        except OSError as exc:
+            os.close(descriptor)
+            raise ApiError(
+                503, 'mutation_lock_unavailable',
+                'The cross-process mutation lock cannot be acquired safely.',
+            ) from exc
 
     def acquire(self, owner: GateOwner) -> None:
         with self._lock:
@@ -61,11 +94,22 @@ class MutationGate:
                     existing_operation_id=self._owner.operation_id,
                     existing_request_id=self._owner.request_id,
                 )
+            descriptor = self._acquire_os_lock()
+            if descriptor is None:
+                raise ApiError(
+                    503, 'external_operation_in_progress',
+                    'Another serving process owns the cross-process mutation lock.',
+                )
+            self._descriptor = descriptor
             self._owner = owner
 
     def release(self, owner: GateOwner) -> None:
         with self._lock:
             if self._owner == owner:
+                if self._descriptor is not None:
+                    fcntl.flock(self._descriptor, fcntl.LOCK_UN)
+                    os.close(self._descriptor)
+                    self._descriptor = None
                 self._owner = None
 
     @property
@@ -105,7 +149,7 @@ class Operation:
 class ActionRuntime:
     def __init__(self, app: Flask):
         self.app = app
-        self.gate = MutationGate()
+        self.gate = MutationGate(self.lock_path)
         self.operations: dict[str, Operation] = {}
         self.overlay_targets: dict[tuple[str, str, str], tuple[str, str]] = {}
         self.ephemeral_targets: dict[tuple[str, str, str], Any] = {}
@@ -121,16 +165,33 @@ class ActionRuntime:
         configured = self.app.config.get('R0_ACTION_MARKER_PATH')
         return Path(configured or (Path(self.app.instance_path) / 'r0-active-operation.json'))
 
+    @property
+    def lock_path(self) -> Path:
+        configured = self.app.config.get('R0_MUTATION_LOCK_PATH')
+        return Path(configured or self.marker_path.with_name(f'{self.marker_path.name}.lock'))
+
     def _inspect_marker(self) -> None:
-        marker = self.marker_path
-        if not marker.exists():
+        owner = GateOwner('startup-reconcile', None, None)
+        try:
+            self.gate.acquire(owner)
+        except ApiError as exc:
+            self.ready = False
+            self.startup_error = exc.code
             return
         try:
-            payload = self._read_marker()
-            self._reconcile_marker(payload)
-        except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
-            self.ready = False
-            self.startup_error = 'interrupted_marker_corrupt'
+            marker = self.marker_path
+            if not marker.exists():
+                self.ready = True
+                self.startup_error = None
+                return
+            try:
+                payload = self._read_marker()
+                self._reconcile_marker(payload)
+            except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+                self.ready = False
+                self.startup_error = 'interrupted_marker_corrupt'
+        finally:
+            self.gate.release(owner)
 
     @staticmethod
     def _marker_digest(payload: dict[str, Any]) -> str:
@@ -158,7 +219,7 @@ class ActionRuntime:
             }
             if not isinstance(item, dict) or set(item) != expected:
                 raise ValueError('marker target schema mismatch')
-            get_strategy(item['source_id'], item['strategy_id'])
+            spec = get_strategy(item['source_id'], item['strategy_id'])
             find_variant(item['source_id'], item['strategy_id'], item['variant_id'])
             if item['role'] not in {'rebuilt', 'collateral'} or item['persistence'] not in {'persistent', 'boot_ephemeral'}:
                 raise ValueError('marker target metadata mismatch')
@@ -166,7 +227,8 @@ class ActionRuntime:
                 raise ValueError('marker target commit state mismatch')
             if item['candidate'] is not None:
                 if not isinstance(item['candidate'], dict) or set(item['candidate']) != {
-                        'generation_id', 'pointer_value', 'pointer_digest', 'manifest_digest', 'snapshot_id'}:
+                        'generation_id', 'pointer_value', 'pointer_digest', 'manifest_digest', 'snapshot_id',
+                        'input_fingerprints', 'input_fingerprint'}:
                     raise ValueError('marker candidate schema mismatch')
                 candidate = item['candidate']
                 pointer = candidate['pointer_value']
@@ -183,7 +245,11 @@ class ActionRuntime:
                         or candidate['pointer_digest'] != hashlib.sha256(
                             canonical_json(pointer).encode('utf-8')).hexdigest()
                         or not isinstance(candidate['snapshot_id'], str)
-                        or not candidate['snapshot_id'].startswith('s_')):
+                        or not candidate['snapshot_id'].startswith('s_')
+                        or not isinstance(candidate['input_fingerprints'], dict)
+                        or set(candidate['input_fingerprints']) != set(target_input_resources(target_dependency_scopes(spec)))
+                        or not fingerprints_are_known(candidate['input_fingerprints'])
+                        or candidate['input_fingerprint'] != fingerprint_set_digest(candidate['input_fingerprints'])):
                     raise ValueError('marker candidate digest mismatch')
             target_ids.append((item['source_id'], item['strategy_id'], item['variant_id']))
         if target_ids != sorted(target_ids) or len(target_ids) != len(set(target_ids)):
@@ -210,7 +276,11 @@ class ActionRuntime:
                     _, current_digest = pointer_value(spec, variant)
                     pre = item['pre_target_state']
                     restored = False
-                    writes_unchanged = True
+                    current_target_input = _target_input_fingerprint(item)
+                    writes_unchanged = (
+                        pre.get('input_fingerprint') is not None
+                        and current_target_input == pre.get('input_fingerprint')
+                    )
                     for write in payload['write_progress']:
                         if not _write_relevant_to_target(write['resource_id'], item):
                             continue
@@ -228,8 +298,12 @@ class ActionRuntime:
                             restored = True
                     candidate = item['candidate']
                     if not restored and candidate is not None and current_digest == candidate['pointer_digest']:
-                        snapshot = load_snapshot(spec, variant)
-                        restored = snapshot is not None and snapshot.snapshot_id == candidate['snapshot_id']
+                        current_inputs = target_input_fingerprints(target_dependency_scopes(spec))
+                        if (fingerprints_are_known(current_inputs)
+                                and current_inputs == candidate['input_fingerprints']
+                                and fingerprint_set_digest(current_inputs) == candidate['input_fingerprint']):
+                            snapshot = load_snapshot(spec, variant)
+                            restored = snapshot is not None and snapshot.snapshot_id == candidate['snapshot_id']
                     if restored:
                         continue
                     write_target_fence(spec, variant, payload['operation_id'], pre, reason='interrupted_operation')
@@ -252,6 +326,9 @@ class ActionRuntime:
             return payload
 
     def ensure_ready(self) -> None:
+        if not self.ready and self.startup_error in {
+                'external_operation_in_progress', 'mutation_lock_unavailable'}:
+            self._inspect_marker()
         if not self.ready:
             raise ApiError(503, self.startup_error or 'interrupted_reconciliation_failed', 'Startup crash-fence reconciliation has not completed.')
 
@@ -275,6 +352,38 @@ class ActionRuntime:
                 staging.unlink()
             except FileNotFoundError:
                 pass
+
+    def _exclusive_json(self, target: Path, payload: dict[str, Any]) -> None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        raw = canonical_json(payload).encode('utf-8')
+        descriptor = None
+        created = False
+        try:
+            descriptor = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            created = True
+            offset = 0
+            while offset < len(raw):
+                written = os.write(descriptor, raw[offset:])
+                if written <= 0:
+                    raise OSError('exclusive crash-fence write made no progress')
+                offset += written
+            os.fsync(descriptor)
+            os.close(descriptor)
+            descriptor = None
+            directory = os.open(target.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        except Exception:
+            if descriptor is not None:
+                os.close(descriptor)
+            if created:
+                try:
+                    target.unlink()
+                except FileNotFoundError:
+                    pass
+            raise
 
     def _persist_marker(self, operation: Operation, affected_targets: list[dict[str, str]], pre_target_state: list[dict[str, Any]]) -> None:
         pre_by_target = {
@@ -309,7 +418,7 @@ class ActionRuntime:
         }
         payload['marker_digest'] = self._marker_digest(payload)
         try:
-            self._atomic_json(self.marker_path, payload)
+            self._exclusive_json(self.marker_path, payload)
         except OSError as exc:
             raise ApiError(500, 'action_crash_fence_failed', 'Crash-fence could not be made durable before worker admission.') from exc
 
@@ -420,45 +529,7 @@ def _stock_parquet_ready() -> bool:
         return False
 
 
-def _path_fingerprint(paths: tuple[Path, ...]) -> str | None:
-    """Cheap durable fingerprint over atomic sidecars and file identities.
-
-    The large stock artifacts are intentionally not read end-to-end on an HTTP
-    preflight. Their atomic-write sidecars carry the content sample/checkpoint;
-    file size and nanosecond mtime make replacement visible as well.
-    """
-    records = []
-    for path in paths:
-        try:
-            if path.is_dir():
-                children = sorted(
-                    child for child in path.rglob('*')
-                    if child.is_file() and (child.suffix == '.json' or child.name.endswith('.meta.json'))
-                )
-                child_fingerprint = _path_fingerprint(tuple(children))
-                records.append({'path': str(path), 'directory': True, 'fingerprint': child_fingerprint})
-                continue
-            stat = path.stat()
-            raw = path.read_bytes() if stat.st_size <= 1024 * 1024 or path.name.endswith('.meta.json') else b''
-            records.append({
-                'path': str(path), 'size': stat.st_size, 'mtime_ns': stat.st_mtime_ns,
-                'content_digest': hashlib.sha256(raw).hexdigest() if raw else None,
-            })
-        except OSError:
-            records.append({'path': str(path), 'missing': True})
-    if not records or all(item.get('missing') for item in records):
-        return None
-    return hashlib.sha256(canonical_json(records).encode('utf-8')).hexdigest()
-
-
 def _resource_fingerprint(resource_id: str) -> str | None:
-    configured = current_app.config.get('R0_RESOURCE_FINGERPRINTS')
-    if callable(configured):
-        value = configured(resource_id)
-        return str(value) if value is not None else None
-    if isinstance(configured, dict) and resource_id in configured:
-        value = configured[resource_id]
-        return str(value) if value is not None else None
     if resource_id.startswith('artifact:') and resource_id.count('/') == 2:
         source_id, strategy_id, variant_id = resource_id[len('artifact:'):].split('/', 2)
         try:
@@ -466,32 +537,7 @@ def _resource_fingerprint(resource_id: str) -> str | None:
             return digest
         except (KeyError, TypeError, ValueError):
             return None
-    root = Path(__file__).resolve().parents[3]
-    resource_paths = {
-        'dataset:index': (
-            root / 'data/_idx_summary.csv', root / 'data/_idx_summary.csv.meta.json',
-            root / 'data/_etf_summary.csv', root / 'data/_etf_summary.csv.meta.json',
-        ),
-        'dataset:index-daily': (root / 'data/_idx_summary.csv', root / 'data/_idx_summary.csv.meta.json'),
-        'dataset:etf-daily': (root / 'data/_etf_summary.csv', root / 'data/_etf_summary.csv.meta.json'),
-        'dataset:aux': (
-            root / 'data/_fred_summary.csv', root / 'data/_fred_summary.csv.meta.json',
-            root / 'data/a_share_macro', root / 'strategy/risk_signals.json',
-        ),
-        'dataset:fred': (root / 'data/_fred_summary.csv', root / 'data/_fred_summary.csv.meta.json'),
-        'dataset:a-share-macro': (root / 'data/a_share_macro',),
-        'artifact:risk-signals': (root / 'strategy/risk_signals.json', root / 'strategy/risk_signals.json.meta.json'),
-        'dataset:stock': (
-            root / 'stock_trade_demo/stock_data.csv', root / 'stock_trade_demo/stock_data.csv.meta.json',
-            root / 'stock_trade_demo/stock_data.parquet', root / 'stock_trade_demo/stock_data.parquet.meta.json',
-        ),
-        'dataset:stock-csv': (root / 'stock_trade_demo/stock_data.csv', root / 'stock_trade_demo/stock_data.csv.meta.json'),
-        'dataset:stock-parquet': (root / 'stock_trade_demo/stock_data.parquet', root / 'stock_trade_demo/stock_data.parquet.meta.json'),
-        'dataset:factor': (root / 'strategy/backtest_sector_heat.csv', root / 'strategy/backtest_sector_heat.csv.meta.json'),
-        'artifact:sector-heat': (root / 'strategy/backtest_sector_heat.csv', root / 'strategy/backtest_sector_heat.csv.meta.json'),
-    }
-    paths = resource_paths.get(resource_id)
-    return _path_fingerprint(paths) if paths is not None else None
+    return production_resource_fingerprint(resource_id)
 
 
 def _write_relevant_to_target(resource_id: str, target: dict[str, Any]) -> bool:
@@ -511,18 +557,15 @@ def _write_relevant_to_target(resource_id: str, target: dict[str, Any]) -> bool:
     if scope is None:
         return True
     spec = get_strategy(target['source_id'], target['strategy_id'])
-    return scope in spec.recovery_scopes
+    return scope in target_dependency_scopes(spec)
 
 
 def _target_input_fingerprint(target: dict[str, Any]) -> str | None:
     spec = get_strategy(target['source_id'], target['strategy_id'])
-    values = {
-        scope: _resource_fingerprint(f'dataset:{scope}')
-        for scope in spec.recovery_scopes
-    }
-    if not values or all(value is None for value in values.values()):
+    values = target_input_fingerprints(target_dependency_scopes(spec))
+    if not fingerprints_are_known(values):
         return None
-    return hashlib.sha256(canonical_json(values).encode('utf-8')).hexdigest()
+    return fingerprint_set_digest(values)
 
 
 def update_plan(scopes: list[str], force: bool) -> dict[str, Any]:
@@ -608,12 +651,27 @@ def _affected_update_targets(resolved_scopes: list[str]) -> list[dict[str, str]]
     affected = []
     scope_set = set(resolved_scopes)
     for spec in STRATEGY_SPECS:
-        if not scope_set.intersection(spec.recovery_scopes):
+        impact_scopes = set(target_dependency_scopes(spec))
+        # The legacy stock pull clears the shared Selection/A-timing cache.
+        # A timing still fingerprints only its real index/ETF inputs, but it is
+        # an explicitly rebuilt target of the stock operation.
+        if spec.source_id == 'a_share_timing':
+            impact_scopes.add('stock')
+        relevant = scope_set.intersection(impact_scopes)
+        if not relevant:
             continue
+        rebuilt = any(
+            (scope == 'index' and spec.source_id in {'a_share_timing', 'us_timing', 'hk_timing', 'commodity'})
+            or (scope == 'stock' and spec.source_id in {'selection', 'a_share_timing'})
+            or (scope == 'aux' and spec.source_id == 'decision_context' and spec.strategy_id == 'risk_signals')
+            or (scope == 'factor' and spec.source_id == 'selection_factor' and spec.strategy_id == 'sector_heat')
+            for scope in relevant
+        )
         for variant in variants_for(spec):
             affected.append({
                 'source_id': spec.source_id, 'strategy_id': spec.strategy_id,
-                'variant_id': variant.variant_id, 'role': 'rebuilt',
+                'variant_id': variant.variant_id,
+                'role': 'rebuilt' if rebuilt else 'collateral',
             })
     return affected
 
@@ -640,14 +698,56 @@ def _pre_states(affected: list[dict[str, str]]) -> list[dict[str, Any]]:
     return rows
 
 
+def _clear_built_entry(target: dict[str, str]) -> None:
+    source_id = target['source_id']
+    strategy_id = target['strategy_id']
+    if source_id == 'selection':
+        state.BACKTEST_CACHE.pop(strategy_id, None)
+    elif source_id == 'a_share_timing':
+        state.TIMING_CACHE.pop(strategy_id, None)
+    elif source_id == 'us_timing':
+        state.US_TIMING_CACHE.pop(strategy_id, None)
+    elif source_id == 'hk_timing':
+        state.HK_CACHE.pop(strategy_id, None)
+    elif source_id == 'commodity':
+        state.COMMODITY_CACHE.pop(strategy_id, None)
+
+
+def _build_fixed_scope_targets(scope: str) -> None:
+    failures = []
+    for target in _affected_update_targets([scope]):
+        if target['role'] != 'rebuilt' or target['source_id'] == 'decision_context':
+            continue
+        _clear_built_entry(target)
+        try:
+            _default_recovery_builder(target)
+        except Exception:
+            _clear_built_entry(target)
+            failures.append('/'.join((target['source_id'], target['strategy_id'], target['variant_id'])))
+    if failures:
+        raise RuntimeError(f'{scope} target rebuild failed: {",".join(failures)}')
+
+
+def _run_index_update_with_builds() -> None:
+    state._run_index_data_update()
+    if state._INDEX_UPDATE_STATUS.get('stage') == 'done' and not state._INDEX_UPDATE_STATUS.get('error'):
+        _build_fixed_scope_targets('index')
+
+
+def _run_stock_update_with_builds() -> None:
+    state._run_data_update()
+    if state._UPDATE_DATA_STATUS.get('stage') == 'done' and not state._UPDATE_DATA_STATUS.get('error'):
+        _build_fixed_scope_targets('stock')
+
+
 def _runner(scope: str) -> Callable[[], Any]:
     configured = current_app.config.get('R0_ACTION_RUNNERS') or {}
     if scope in configured:
         return configured[scope]
     return {
-        'index': state._run_index_data_update,
+        'index': _run_index_update_with_builds,
         'aux': state._run_aux_data_update,
-        'stock': state._run_data_update,
+        'stock': _run_stock_update_with_builds,
         'factor': state._run_factor_update,
     }[scope]
 
@@ -695,6 +795,15 @@ def _built_entry(spec, variant):
                 'version': 'v0.1', 'saved_at': utc_now(),
                 'top_k': int(variant.canonical_params['top_k']), 'items': items,
             }
+    if spec.source_id == 'decision_context' and spec.strategy_id == 'risk_signals':
+        path = Path(__file__).resolve().parents[3] / 'strategy/risk_signals.json'
+        try:
+            payload = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ValueError('risk_signals artifact is missing or invalid') from exc
+        if not isinstance(payload, dict) or not payload:
+            raise ValueError('risk_signals artifact must be a nonempty object')
+        return payload
     return None
 
 
@@ -821,9 +930,12 @@ def _publish_affected(
         targets = _affected_update_targets(operation.resolved_plan.get('resolved_scopes', []))
     results = []
     for target in targets:
+        if target.get('role') == 'collateral':
+            results.append({**target, 'published': False, 'collateral': True, 'error_code': None})
+            continue
         spec = get_strategy(target['source_id'], target['strategy_id'])
         variant = find_variant(target['source_id'], target['strategy_id'], target['variant_id'])
-        if blocked_scopes and set(spec.recovery_scopes).intersection(blocked_scopes):
+        if blocked_scopes and set(target_dependency_scopes(spec)).intersection(blocked_scopes):
             results.append({**target, 'published': False, 'error_code': 'target_dependency_failed'})
             continue
         entry = _built_entry(spec, variant)
@@ -857,8 +969,12 @@ def _publish_affected(
                 runtime()._update_marker(operation.operation_id, lambda payload: marker_target(payload).update(
                     candidate=candidate, commit_state='durable'))
 
+            frozen_inputs = target_input_fingerprints(target_dependency_scopes(spec))
+            if not fingerprints_are_known(frozen_inputs):
+                raise ValueError('target input fingerprint unavailable before publication')
             generation_id = publish_entry(
                 spec, variant, frozen,
+                input_fingerprints=frozen_inputs,
                 before_pointer_commit=before_commit,
                 after_pointer_commit=after_commit,
             )
@@ -893,7 +1009,12 @@ def _reconcile_unpublished_targets(operation: Operation, publications: list[dict
         spec = get_strategy(target['source_id'], target['strategy_id'])
         variant = find_variant(target['source_id'], target['strategy_id'], target['variant_id'])
         _, pointer_digest = pointer_value(spec, variant)
-        unchanged = pointer_digest == target['pre_pointer_digest']
+        pre = pre_by_target.get(key, {})
+        unchanged = (
+            pointer_digest == target['pre_pointer_digest']
+            and pre.get('input_fingerprint') is not None
+            and _target_input_fingerprint(target) == pre.get('input_fingerprint')
+        )
         for write in marker['write_progress']:
             if not _write_relevant_to_target(write['resource_id'], target):
                 continue
@@ -907,7 +1028,7 @@ def _reconcile_unpublished_targets(operation: Operation, publications: list[dict
             continue
         try:
             write_target_fence(
-                spec, variant, operation.operation_id, pre_by_target.get(key, {}),
+                spec, variant, operation.operation_id, pre,
                 reason='operation_input_changed',
             )
         except OSError:
@@ -991,10 +1112,12 @@ def _run_update(operation_id: str) -> None:
     failed_scopes = {step['scope'] for step in operation.steps if step['status'] in {'error', 'skipped_dependency'}}
     publications = _publish_affected(operation, blocked_scopes=failed_scopes)
     operation.result = {'targets': publications}
-    if any(not item['published'] for item in publications):
+    if any(not item['published'] and not item.get('collateral') for item in publications):
         any_error = True
     stabilization_failed = _reconcile_unpublished_targets(operation, publications)
-    completed = any(step['status'] in {'done', 'skipped_current'} for step in operation.steps) or any(item['published'] for item in publications)
+    completed = any(item['published'] for item in publications) or (
+        not publications and all(step['status'] == 'skipped_current' for step in operation.steps)
+    )
     terminal = 'partial' if any_error and completed else ('error' if any_error else 'done')
     error_code = 'update_partial' if terminal == 'partial' else ('update_failed' if terminal == 'error' else None)
     _finish_action(value, operation, owner, terminal_status=terminal, error_code=error_code, stabilization_failed=stabilization_failed)

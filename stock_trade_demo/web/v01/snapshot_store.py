@@ -20,8 +20,14 @@ import pandas as pd
 from flask import current_app
 
 from web import state
-from web.v01.catalog import StrategySpec, VariantSpec, get_strategy, recovery_plan_id
+from web.v01.catalog import (
+    StrategySpec, VariantSpec, get_strategy, recovery_plan_id,
+    target_dependency_scopes,
+)
 from web.v01.contracts import ApiError, canonical_json, decode_cursor, digest_id, encode_cursor, parse_iso_day
+from web.v01.fingerprints import (
+    fingerprint_set_digest, fingerprints_are_known, target_input_fingerprints,
+)
 
 
 PUBLISHED_SIGNAL_KEYS = (
@@ -248,15 +254,21 @@ def _read_generation(spec: StrategySpec, variant: VariantSpec) -> dict[str, Any]
         manifest = payload['manifest']
         if not isinstance(manifest, dict) or set(manifest) != {
                 'variant_id', 'canonical_params', 'code_fingerprint',
-                'data_fingerprint', 'payload_digest', 'generated_at'}:
+                'data_fingerprint', 'payload_digest', 'generated_at',
+                'input_fingerprints', 'input_fingerprint'}:
             raise ValueError('generation manifest schema mismatch')
         artifact_digest = hashlib.sha256(canonical_json(artifact).encode('utf-8')).hexdigest()
+        current_inputs = target_input_fingerprints(target_dependency_scopes(spec))
         if (manifest['variant_id'] != variant.variant_id
                 or manifest['canonical_params'] != _jsonable(variant.canonical_params)
                 or manifest['generated_at'] != payload['generated_at']
                 or manifest['data_fingerprint'] != artifact_digest
                 or manifest['payload_digest'] != artifact_digest
-                or manifest['code_fingerprint'] != _code_fingerprint()):
+                or manifest['code_fingerprint'] != _code_fingerprint()
+                or not isinstance(manifest['input_fingerprints'], dict)
+                or not fingerprints_are_known(current_inputs)
+                or manifest['input_fingerprints'] != current_inputs
+                or manifest['input_fingerprint'] != fingerprint_set_digest(current_inputs)):
             raise ValueError('generation manifest validation failed')
         entry: dict[str, Any] = {'target_state': payload['target_state'], 'generated_at': payload['generated_at']}
         if artifact['kind'] == 'frame':
@@ -318,6 +330,7 @@ def publish_entry(
     entry: Any,
     *,
     target_state: dict[str, Any] | None = None,
+    input_fingerprints: dict[str, str | None] | None = None,
     before_pointer_commit: Callable[[dict[str, Any]], None] | None = None,
     after_pointer_commit: Callable[[dict[str, Any]], None] | None = None,
 ) -> str:
@@ -379,6 +392,12 @@ def publish_entry(
             )
     projections.configuration(candidate)
     artifact_digest = hashlib.sha256(canonical_json(document).encode('utf-8')).hexdigest()
+    current_inputs = target_input_fingerprints(target_dependency_scopes(spec))
+    frozen_inputs = current_inputs if input_fingerprints is None else input_fingerprints
+    if (not isinstance(frozen_inputs, dict)
+            or frozen_inputs != current_inputs
+            or not fingerprints_are_known(frozen_inputs)):
+        raise ValueError('target input fingerprints are missing, unknown, or changed before publication')
     manifest = {
         'variant_id': variant.variant_id,
         'canonical_params': _jsonable(variant.canonical_params),
@@ -386,6 +405,8 @@ def publish_entry(
         'data_fingerprint': artifact_digest,
         'payload_digest': artifact_digest,
         'generated_at': generated_at,
+        'input_fingerprints': frozen_inputs,
+        'input_fingerprint': fingerprint_set_digest(frozen_inputs),
     }
     payload = {
         'schema_version': 1, 'source_id': spec.source_id, 'strategy_id': spec.strategy_id,
@@ -410,6 +431,8 @@ def publish_entry(
         'pointer_digest': hashlib.sha256(pointer_raw).hexdigest(),
         'manifest_digest': hashlib.sha256(raw).hexdigest(),
         'snapshot_id': candidate_snapshot_id,
+        'input_fingerprints': frozen_inputs,
+        'input_fingerprint': fingerprint_set_digest(frozen_inputs),
     }
     pointer_path = target / 'pointer.json'
     try:
@@ -422,6 +445,10 @@ def publish_entry(
     try:
         _atomic_write(pointer_path, pointer_raw)
         pointer_committed = True
+        committed_inputs = target_input_fingerprints(target_dependency_scopes(spec))
+        if (not fingerprints_are_known(committed_inputs)
+                or committed_inputs != frozen_inputs):
+            raise ValueError('target input fingerprints changed during pointer commit')
         if after_pointer_commit is not None:
             after_pointer_commit(candidate)
     except Exception:

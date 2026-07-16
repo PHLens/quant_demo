@@ -118,6 +118,14 @@ STRATEGIES = {(item.source_id, item.strategy_id): item for item in STRATEGY_SPEC
 _DECLARED_METADATA: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
 
 
+def target_dependency_scopes(spec: StrategySpec) -> tuple[str, ...]:
+    """Frozen reverse-dependency scopes used by publication and crash fencing."""
+    scopes = list(spec.recovery_scopes)
+    if spec.source_id == 'decision_context' and spec.strategy_id == 'risk_signals':
+        scopes.append('aux')
+    return tuple(scope for scope in SCOPE_ORDER if scope in scopes)
+
+
 def get_source(source_id: str) -> SourceSpec:
     item = SOURCES.get(source_id)
     if item is None:
