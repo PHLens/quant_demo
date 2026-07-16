@@ -11,7 +11,7 @@ import pytest
 
 from web import state
 from web.app import create_app
-from web.v01 import actions, fingerprints
+from web.v01 import actions, fingerprints, resource_paths
 from web.v01.catalog import get_strategy, variants_for
 from web.v01.snapshot_store import PUBLISHED_SIGNAL_KEYS, publish_entry
 
@@ -351,6 +351,113 @@ def test_factor_plan_adds_stock_only_when_parquet_is_not_valid(app, client, tmp_
     assert missing['resolved_scopes'] == ['stock', 'factor']
     assert missing['prerequisites'] == [{'scope': 'stock', 'required_by': 'factor'}]
     assert missing['steps'][1]['blocked_by'] == ['stock']
+
+
+def test_missing_persistent_resource_root_fails_before_update_admission(
+        config, tmp_path):
+    missing_root = tmp_path / 'missing-persistent-root'
+    config['R0_RESOURCE_ROOT'] = missing_root
+    app = create_app(config)
+    client = app.test_client()
+
+    diagnostic = app.extensions['r0_resource_root_diagnostic']
+    assert diagnostic['ready'] is False
+    assert diagnostic['code'] == 'resource_root_unavailable'
+    stock = client.get('/api/r0/data-check?scope=stock').get_json()['scopes'][0]
+    assert stock['unknown'] is True
+    assert stock['reason'] == 'resource_root_unavailable'
+
+    preview = client.get('/api/r0/data-update-plan?scopes=stock&force=true')
+    assert preview.status_code == 503
+    assert preview.get_json()['error'] == 'resource_root_unavailable'
+    update = client.post(
+        '/api/r0/actions/data-update',
+        json={'scopes': ['stock'], 'force': True},
+    )
+    assert update.status_code == 503
+    assert update.get_json()['error'] == 'resource_root_unavailable'
+    assert app.extensions['r0_action_runtime'].operations == {}
+    assert not Path(config['R0_ACTION_MARKER_PATH']).exists()
+
+
+def test_active_release_cannot_be_used_as_production_resource_root(
+        config, tmp_path, monkeypatch):
+    release_root = tmp_path / 'release-c2b2077'
+    stock_paths = fingerprints.production_resource_paths(release_root)['dataset:stock']
+    _materialize_resource_paths(stock_paths)
+    monkeypatch.setattr(resource_paths, 'CODE_REPO_ROOT', release_root)
+    config.update(TESTING=False, R0_RESOURCE_ROOT=release_root)
+    app = create_app(config)
+    client = app.test_client()
+
+    assert app.extensions['r0_resource_root_diagnostic']['code'] == 'resource_root_not_persistent'
+    preview = client.get('/api/r0/data-update-plan?scopes=stock&force=true')
+    assert preview.status_code == 503
+    assert preview.get_json()['error'] == 'resource_root_not_persistent'
+    assert app.extensions['r0_action_runtime'].operations == {}
+    assert not Path(config['R0_ACTION_MARKER_PATH']).exists()
+
+
+def test_stock_runner_and_fingerprint_use_persistent_root_not_release(
+        config, tmp_path, monkeypatch):
+    release_root = tmp_path / 'release-c2b2077'
+    release_root.mkdir()
+    monkeypatch.setattr(resource_paths, 'CODE_REPO_ROOT', release_root)
+    persistent_root = tmp_path / 'persistent-data'
+    stock_paths = fingerprints.production_resource_paths(persistent_root)['dataset:stock']
+    _materialize_resource_paths(stock_paths)
+    for path, day in (
+        (persistent_root / 'stock_trade_demo/stock_data.csv.meta.json', '2026-01-02'),
+        (persistent_root / 'stock_trade_demo/stock_data.parquet.meta.json', '2026-01-03'),
+    ):
+        path.write_text(json.dumps({'data_max_date': day}), encoding='utf-8')
+    release_project = release_root / 'stock_trade_demo'
+    release_project.mkdir()
+    (release_project / 'stock_data.csv.meta.json').write_text(
+        json.dumps({'data_max_date': '2099-12-31'}), encoding='utf-8',
+    )
+    config['R0_RESOURCE_ROOT'] = persistent_root
+    config.pop('R0_RESOURCE_FINGERPRINTS')
+    app = create_app(config)
+    assert app.extensions['r0_resource_root_diagnostic']['ready'] is True
+    client = app.test_client()
+    status = client.get('/api/r0/data-check?scope=stock').get_json()['scopes'][0]
+    assert status['current_local_date'] == '2026-01-03'
+    preview = client.get('/api/r0/data-update-plan?scopes=stock&force=true')
+    assert preview.status_code == 200
+    assert preview.get_json()['resolved_scopes'] == ['stock']
+
+    calls = {}
+
+    def supplement(csv_path, *, target_year, target_month, cache_dir):
+        calls['csv_path'] = Path(csv_path)
+        calls['cache_dir'] = Path(cache_dir)
+        return 0
+
+    monkeypatch.setattr(state, '_supplement_csv_incremental', supplement)
+    monkeypatch.setattr(
+        state, 'atomic_write_parquet',
+        lambda path, *_args, **_kwargs: calls.__setitem__('parquet_path', Path(path)),
+    )
+    monkeypatch.setattr(state, 'load_data', lambda path: pd.DataFrame({'path': [path]}))
+    monkeypatch.setattr(state, 'ensure_index_returns_loaded', lambda: None)
+    monkeypatch.setattr(state, 'init_cache', lambda: None)
+    monkeypatch.setattr(state, 'init_timing_cache', lambda: None)
+    monkeypatch.setattr(state, '_CACHE_FILE', str(tmp_path / 'no-cache.pkl'))
+    monkeypatch.setattr(state, 'DATA_DF', None)
+
+    with app.app_context():
+        before = fingerprints.resource_fingerprint('dataset:stock')
+        state._run_data_update()
+        after = fingerprints.resource_fingerprint('dataset:stock')
+
+    assert before is not None and after is not None
+    assert calls['csv_path'] == persistent_root / 'stock_trade_demo/stock_data.csv'
+    assert calls['parquet_path'] == persistent_root / 'stock_trade_demo/stock_data.parquet'
+    assert calls['cache_dir'] == persistent_root / '.cache'
+    assert not (release_root / 'stock_trade_demo/stock_data.csv').exists()
+    assert state._UPDATE_DATA_STATUS['stage'] == 'done'
+    assert state._UPDATE_DATA_STATUS['error'] is None
 
 
 def test_current_update_is_a_no_write_no_target_operation(app, client, monkeypatch):

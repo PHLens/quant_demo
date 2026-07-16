@@ -106,3 +106,29 @@ def test_fingerprint_is_stable():
     fp2 = cs.compute_fingerprint()
     assert fp1 == fp2
     assert len(fp1) == 16  # 16 hex chars (sha256 truncated)
+
+
+def test_configured_data_project_dir_controls_cache_mtime(tmp_path, monkeypatch):
+    cache_dir = tmp_path / 'cache'
+    cache_file = cache_dir / 'web_cache.pkl'
+    data_project = tmp_path / 'persistent-data/stock_trade_demo'
+    data_project.mkdir(parents=True)
+    stock_csv = data_project / 'stock_data.csv'
+    stock_csv.write_text('date,value\n2026-01-01,1\n', encoding='utf-8')
+    os.utime(stock_csv, (2000, 2000))
+    monkeypatch.setattr(cs, 'CACHE_DIR', str(cache_dir))
+    monkeypatch.setattr(cs, 'WEB_CACHE_FILE', str(cache_file))
+
+    assert cs.save_web_cache(
+        backtest_cache={'x': 1}, timing_cache={}, profile_summary_cache={},
+        data_project_dir=str(data_project),
+    )
+    with cache_file.open('rb') as stream:
+        payload = pickle.load(stream)
+    assert payload['data_mtime'] == 2000
+
+    os.utime(stock_csv, (3000, 3000))
+    assert not cs.load_web_cache(
+        backtest_cache={}, timing_cache={}, profile_summary_cache={},
+        data_project_dir=str(data_project),
+    )

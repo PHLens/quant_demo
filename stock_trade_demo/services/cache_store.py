@@ -73,11 +73,12 @@ FINGERPRINT: str = compute_fingerprint()
 
 
 # ── helpers ──────────────────────────────────────────────────────────
-def _get_data_mtime() -> float:
+def _get_data_mtime(data_project_dir: str | None = None) -> float:
     """Latest mtime of stock_data.{csv,parquet}; treats missing files as 0."""
+    project_dir = data_project_dir or _PROJECT_DIR
     max_mtime = 0.0
     for fname in ('stock_data.parquet', 'stock_data.csv'):
-        fpath = os.path.join(_PROJECT_DIR, fname)
+        fpath = os.path.join(project_dir, fname)
         if os.path.exists(fpath):
             max_mtime = max(max_mtime, os.path.getmtime(fpath))
     return max_mtime
@@ -94,6 +95,7 @@ def save_web_cache(
     backtest_cache: Dict,
     timing_cache: Dict,
     profile_summary_cache: Dict,
+    data_project_dir: str | None = None,
 ) -> bool:
     """Pickle the three runtime caches; returns True on success.
 
@@ -105,7 +107,10 @@ def save_web_cache(
     payload = {
         'version': CACHE_VERSION,
         'fingerprint': FINGERPRINT,
-        'data_mtime': _get_data_mtime(),
+        'data_mtime': (
+            _get_data_mtime(data_project_dir)
+            if data_project_dir is not None else _get_data_mtime()
+        ),
         'backtest': dict(backtest_cache),
         'timing': dict(timing_cache),
         'profile_summary': dict(profile_summary_cache),
@@ -142,6 +147,7 @@ def load_web_cache(
     backtest_cache: Dict,
     timing_cache: Dict,
     profile_summary_cache: Dict,
+    data_project_dir: str | None = None,
 ) -> bool:
     """Load WEB_CACHE_FILE into the supplied dicts in place.
 
@@ -171,7 +177,11 @@ def load_web_cache(
         print(f'[cache] fingerprint 失配 ({cached_fp} != {FINGERPRINT})，需要重新计算')
         return False
 
-    if payload.get('data_mtime', 0) < _get_data_mtime():
+    current_data_mtime = (
+        _get_data_mtime(data_project_dir)
+        if data_project_dir is not None else _get_data_mtime()
+    )
+    if payload.get('data_mtime', 0) < current_data_mtime:
         print('[cache] 数据文件已更新，需要重新计算')
         return False
 

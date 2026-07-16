@@ -8,6 +8,7 @@ from typing import Any, Iterable
 from flask import current_app
 
 from web.v01.contracts import canonical_json
+from web.v01.resource_paths import configured_resource_root
 
 
 SCOPE_RESOURCES = {
@@ -130,9 +131,7 @@ def resource_fingerprint(resource_id: str) -> str | None:
     if isinstance(configured, dict) and resource_id in configured:
         value = configured[resource_id]
         return str(value) if value is not None else None
-    configured_root = current_app.config.get('R0_RESOURCE_ROOT')
-    root = Path(configured_root) if configured_root else Path(__file__).resolve().parents[3]
-    resource_paths = production_resource_paths(root)
+    resource_paths = production_resource_paths(configured_resource_root())
     paths = resource_paths.get(resource_id)
     return _path_fingerprint(paths) if paths is not None else None
 

@@ -15,6 +15,7 @@ from web.blueprints import pages, v01_api
 from web.v01.actions import init_runtime
 from web.v01.contracts import ApiError
 from web.v01.operation_log import append_request_result
+from web.v01.resource_paths import resource_root_diagnostic
 
 
 def _sanitize_nan_for_json(obj):
@@ -62,6 +63,8 @@ def create_app(config: Mapping[str, Any] | None = None) -> Flask:
     if config:
         app.config.update(config)
     app.config.setdefault('R0_OPERATION_LOG_PATH', Path(app.instance_path) / 'r0-operation-log.jsonl')
+    with app.app_context():
+        app.extensions['r0_resource_root_diagnostic'] = resource_root_diagnostic(('stock',))
 
     init_runtime(app)
     app.register_blueprint(pages.bp)

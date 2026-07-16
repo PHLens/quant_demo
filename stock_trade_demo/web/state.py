@@ -72,6 +72,7 @@ from timing import (  # noqa: F401
 )
 
 from web import serializers as _serializers
+from web.v01.resource_paths import configured_resource_root, stock_resource_dir
 from web.serializers import (
     SPLIT_DATE,
     DEFAULT_BENCHMARK_ID,
@@ -331,6 +332,7 @@ def _save_disk_cache():
         backtest_cache=BACKTEST_CACHE,
         timing_cache=TIMING_CACHE,
         profile_summary_cache=_PROFILE_SUMMARY_CACHE,
+        data_project_dir=os.fspath(stock_resource_dir()),
     )
 
 
@@ -339,6 +341,7 @@ def _load_disk_cache():
         backtest_cache=BACKTEST_CACHE,
         timing_cache=TIMING_CACHE,
         profile_summary_cache=_PROFILE_SUMMARY_CACHE,
+        data_project_dir=os.fspath(stock_resource_dir()),
     )
 
 
@@ -372,7 +375,7 @@ def ensure_stock_data_loaded():
         _DATA_READY.wait()
         if DATA_DF is not None:
             return
-    csv_path = os.path.join(_PROJECT_ROOT, 'stock_data.csv')
+    csv_path = os.fspath(stock_resource_dir() / 'stock_data.csv')
     if not os.path.exists(csv_path):
         raise FileNotFoundError(f'数据文件不存在: {csv_path}')
     print('[init] 加载数据中 (823MB)...')
@@ -1563,7 +1566,7 @@ def _check_stock_data_freshness():
         'reason': '',
         'checked_at': _datetime.now().isoformat(timespec='seconds'),
     }
-    csv_path = os.path.join(_PROJECT_ROOT, 'stock_data.csv')
+    csv_path = os.fspath(stock_resource_dir() / 'stock_data.csv')
     if not os.path.exists(csv_path):
         result['needs_update'] = True
         result['reason'] = 'stock_data.csv 不存在，首次需要初始化'
@@ -2262,9 +2265,9 @@ def _run_data_update():
             prev_year -= 1
         prev_prefix = f"{prev_year}-{prev_month:02d}"
 
-        csv_path = os.path.join(_PROJECT_ROOT, 'stock_data.csv')
-        repo_root = os.path.dirname(_PROJECT_ROOT)
-        cache_dir = os.path.join(repo_root, '.cache')
+        resource_root = configured_resource_root()
+        csv_path = os.fspath(resource_root / 'stock_trade_demo/stock_data.csv')
+        cache_dir = os.fspath(resource_root / '.cache')
 
         status['stage'] = 'fetching'
         status['message'] = '正在增量获取最新行情数据（首次约3-5分钟，之后只补差值）...'

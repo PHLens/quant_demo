@@ -27,6 +27,9 @@ from web.v01.fingerprints import (
     resource_fingerprint as production_resource_fingerprint,
     target_input_fingerprints, target_input_resources,
 )
+from web.v01.resource_paths import (
+    configured_resource_root, require_resource_root, resource_root_diagnostic,
+)
 from web.v01.snapshot_store import (
     PUBLISHED_SIGNAL_KEYS, inspect_target, load_snapshot, pointer_value,
     publish_entry, target_fence, write_target_fence,
@@ -470,7 +473,14 @@ def _check_scope(scope: str) -> dict[str, Any]:
     # Do not call the legacy "check" helpers: several of them use ensure/get
     # loaders that fetch and write on a cache miss.  v0.1 check reads only
     # literal local summary/sidecar files.
-    root = Path(__file__).resolve().parents[3]
+    diagnostic = resource_root_diagnostic([scope] if scope == 'stock' else [])
+    if diagnostic['ready'] is not True:
+        return {
+            'scope': scope, 'current_local_date': None,
+            'latest_expected_date': datetime.now(timezone.utc).date().isoformat(),
+            'needs_update': None, 'reason': diagnostic['code'], 'unknown': True,
+        }
+    root = configured_resource_root()
     files = {
         'index': (root / 'data/_idx_summary.csv', root / 'data/_etf_summary.csv'),
         'aux': (root / 'data/_fred_summary.csv', root / 'strategy/risk_signals.json'),
@@ -520,7 +530,7 @@ def _normalized_scopes(raw: Any) -> list[str]:
 
 def _stock_parquet_ready() -> bool:
     configured = current_app.config.get('R0_STOCK_PARQUET_PATH')
-    path = Path(configured) if configured else Path(__file__).resolve().parents[3] / 'stock_trade_demo/stock_data.parquet'
+    path = Path(configured) if configured else configured_resource_root() / 'stock_trade_demo/stock_data.parquet'
     try:
         from pyarrow.parquet import read_metadata
         metadata = read_metadata(path)
@@ -576,6 +586,7 @@ def update_plan(scopes: list[str], force: bool) -> dict[str, Any]:
         resolved.append('stock')
         resolved.sort(key=SCOPE_ORDER.index)
         prerequisites.append({'scope': 'stock', 'required_by': 'factor'})
+    require_resource_root(resolved)
     checks = {item['scope']: item for item in data_check(None)['scopes']}
     scope_writes = {
         'index': ['dataset:index-daily', 'dataset:etf-daily'],
@@ -735,6 +746,7 @@ def _run_index_update_with_builds() -> None:
 
 
 def _run_stock_update_with_builds() -> None:
+    require_resource_root(('stock',))
     state._run_data_update()
     if state._UPDATE_DATA_STATUS.get('stage') == 'done' and not state._UPDATE_DATA_STATUS.get('error'):
         _build_fixed_scope_targets('stock')
@@ -796,7 +808,7 @@ def _built_entry(spec, variant):
                 'top_k': int(variant.canonical_params['top_k']), 'items': items,
             }
     if spec.source_id == 'decision_context' and spec.strategy_id == 'risk_signals':
-        path = Path(__file__).resolve().parents[3] / 'strategy/risk_signals.json'
+        path = configured_resource_root() / 'strategy/risk_signals.json'
         try:
             payload = json.loads(path.read_text(encoding='utf-8'))
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -1262,6 +1274,7 @@ def _recovery_plan(source_id: str, strategy_id: str, variant_id: str) -> tuple[d
         raise ApiError(409, 'recovery_blocked', 'Stale data must be updated through Data Status.', blocker_code='data_stale_use_data_update')
     if target_state.blocker_code:
         raise ApiError(409, 'recovery_blocked', 'A fixed recovery prerequisite is not satisfied.', blocker_code=target_state.blocker_code)
+    require_resource_root(spec.recovery_scopes)
     steps = []
     for ordinal, scope in enumerate(spec.recovery_scopes):
         steps.append({
