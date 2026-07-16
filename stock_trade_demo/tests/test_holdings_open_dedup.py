@@ -183,3 +183,12 @@ def test_compact_payload_does_not_fetch_realtime_quotes(monkeypatch):
 
     assert payload['has_holdings'] is True
     assert payload['holdings'] == []
+
+
+def test_explicit_empty_quote_map_does_not_fall_back_to_network(monkeypatch):
+    """compact 向子序列化器传递 {} 时，不得被 `or fetch()` 覆盖。"""
+    def _unexpected_fetch(_result):
+        raise AssertionError('explicit empty quote map must skip network fetch')
+
+    monkeypatch.setattr(serializers, '_fetch_open_stock_quotes', _unexpected_fetch)
+    assert serializers._resolve_quote_map(pd.DataFrame(), {}) == {}

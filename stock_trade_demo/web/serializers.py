@@ -303,6 +303,13 @@ def _fetch_open_stock_quotes(result):
         return {}
 
 
+def _resolve_quote_map(result, quote_map):
+    """区分“未提供”和“明确跳过”；空 dict 是 compact 的有效选择。"""
+    if quote_map is not None:
+        return quote_map
+    return _fetch_open_stock_quotes(result)
+
+
 def _build_stock_payload(raw_stock, cap_per_stock, period_capital, stock_count, quote_map=None, allow_open_position=False):
     quote_map = quote_map or {}
     ret = float(raw_stock.get('return', 0) or 0)
@@ -658,7 +665,7 @@ def build_selection_interval_windows(result, index_returns=None, benchmark_id=No
             holdings = _build_holdings_payload(
                 df,
                 initial_capital,
-                quote_map=quote_map or _fetch_open_stock_quotes(df),
+                quote_map=_resolve_quote_map(df, quote_map),
                 trading_calendar=trading_calendar,
             )
 
@@ -860,7 +867,7 @@ def compute_split_metrics(result, split_date=SPLIT_DATE, index_returns=None, ben
             period_result['holdings'] = _build_holdings_payload(
                 df,
                 start_capital,
-                quote_map=quote_map or _fetch_open_stock_quotes(df),
+                quote_map=_resolve_quote_map(df, quote_map),
                 trading_calendar=trading_calendar,
             )
 
