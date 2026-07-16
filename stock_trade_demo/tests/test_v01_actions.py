@@ -11,7 +11,7 @@ import pytest
 
 from web import state
 from web.app import create_app
-from web.v01 import actions
+from web.v01 import actions, fingerprints
 from web.v01.catalog import get_strategy, variants_for
 from web.v01.snapshot_store import PUBLISHED_SIGNAL_KEYS, publish_entry
 
@@ -69,6 +69,10 @@ def config(tmp_path):
         'R0_ACTION_MARKER_PATH': tmp_path / 'active-operation.json',
         'R0_OPERATION_LOG_PATH': tmp_path / 'operations.jsonl',
         'R0_CURSOR_KEY': 'test-cursor-key',
+        'R0_RESOURCE_FINGERPRINTS': {
+            resource_id: f'fixture:{resource_id}'
+            for resource_id in fingerprints.production_resource_paths(tmp_path)
+        },
     }
 
 
@@ -155,6 +159,15 @@ def _release_runtime_as_crashed(app, kind, operation_id):
     app.extensions['r0_action_runtime'].gate.release(
         actions.GateOwner(kind, operation_id, None)
     )
+
+
+def _materialize_resource_paths(paths):
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.name.endswith('.json'):
+            path.write_text('{"fixture":"v1"}', encoding='utf-8')
+        else:
+            path.write_text('date,value\n2026-01-01,1\n', encoding='utf-8')
 
 
 def _target():
@@ -723,6 +736,86 @@ def test_new_boot_rejects_candidate_when_exact_target_input_changed_or_unknown(
     assert opened.status_code == 409
     assert opened.get_json()['error'] == 'cache_miss'
     assert not marker.exists()
+
+
+def test_macro_csv_change_without_sidecar_invalidates_production_candidate(
+        config, tmp_path, monkeypatch):
+    resource_root = tmp_path / 'resource-root'
+    resource_paths = fingerprints.production_resource_paths(resource_root)
+    _materialize_resource_paths(resource_paths['dataset:aux'])
+    config['R0_RESOURCE_ROOT'] = resource_root
+    config.pop('R0_RESOURCE_FINGERPRINTS')
+
+    first_app = create_app(config)
+    first_app.config.update(
+        R0_THREAD_FACTORY=ImmediateThread,
+        R0_ACTION_RUNNERS={'aux': lambda: None},
+    )
+    monkeypatch.setattr(actions, '_built_entry', lambda _spec, _variant: {
+        'as_of': '2026-01-01',
+        'generated_at': '2026-01-02T00:00:00Z',
+        'by_strategy': {},
+    })
+    first_runtime = first_app.extensions['r0_action_runtime']
+    monkeypatch.setattr(first_runtime, '_remove_marker', lambda: (_ for _ in ()).throw(OSError('unlink')))
+
+    with first_app.app_context():
+        before = fingerprints.resource_fingerprint('dataset:a-share-macro')
+    assert before is not None
+    macro_csv = resource_root / 'data/a_share_macro/pe_ttm.csv'
+    macro_sidecar = resource_root / 'data/a_share_macro/pe_ttm.csv.meta.json'
+    sidecar_before = macro_sidecar.read_bytes()
+
+    response = first_app.test_client().post(
+        '/api/r0/actions/data-update',
+        json={'scopes': ['aux'], 'force': True},
+    )
+    assert response.status_code == 202
+    marker = Path(config['R0_ACTION_MARKER_PATH'])
+    payload = json.loads(marker.read_text(encoding='utf-8'))
+    rebuilt = next(item for item in payload['affected_targets'] if item['role'] == 'rebuilt')
+    assert (rebuilt['source_id'], rebuilt['strategy_id']) == ('decision_context', 'risk_signals')
+    assert rebuilt['commit_state'] == 'durable'
+    assert rebuilt['candidate']['input_fingerprints']['dataset:a-share-macro'] == before
+
+    macro_csv.write_text('date,value\n2026-01-01,1\n2026-01-02,2\n', encoding='utf-8')
+    assert macro_sidecar.read_bytes() == sidecar_before
+    with first_app.app_context():
+        after = fingerprints.resource_fingerprint('dataset:a-share-macro')
+    assert after is not None and after != before
+    _release_runtime_as_crashed(first_app, 'data-update', response.get_json()['operation_id'])
+
+    second_app = create_app(config)
+    client = second_app.test_client()
+    assert client.get('/api/r0/health').get_json()['ready'] is True
+    variant = client.get(
+        '/api/r0/sources/decision_context/strategies/risk_signals/variants'
+    ).get_json()['items'][0]
+    assert variant['cache_state'] == 'artifact_stale'
+    assert variant['readable'] is False
+    opened = client.get(
+        '/api/r0/sources/decision_context/strategies/risk_signals/snapshots'
+        f'?variant_id={variant["variant_id"]}'
+    )
+    assert opened.status_code == 409
+    assert opened.get_json()['error'] == 'cache_miss'
+    assert not marker.exists()
+
+    original_open = Path.open
+
+    def unreadable(path, *args, **kwargs):
+        if path == macro_csv:
+            raise PermissionError('fixture unreadable')
+        return original_open(path, *args, **kwargs)
+
+    with monkeypatch.context() as context:
+        context.setattr(Path, 'open', unreadable)
+        with second_app.app_context():
+            assert fingerprints.resource_fingerprint('dataset:a-share-macro') is None
+
+    macro_csv.unlink()
+    with second_app.app_context():
+        assert fingerprints.resource_fingerprint('dataset:a-share-macro') is None
 
 
 def test_unexpected_pointer_after_interruption_becomes_artifact_stale(config):

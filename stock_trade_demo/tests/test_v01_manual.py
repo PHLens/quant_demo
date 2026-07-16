@@ -11,6 +11,7 @@ import pytest
 from web.app import create_app
 from web.v01 import manual_ledger
 from web.v01.catalog import get_strategy, variants_for
+from web.v01.fingerprints import SCOPE_RESOURCES
 from web.v01.snapshot_store import PUBLISHED_SIGNAL_KEYS, publish_entry
 
 
@@ -24,6 +25,11 @@ def app(tmp_path):
         R0_ACTION_MARKER_PATH=tmp_path / 'active-operation.json',
         R0_OPERATION_LOG_PATH=tmp_path / 'operations.jsonl',
         R0_CURSOR_KEY='test-cursor-key',
+        R0_RESOURCE_FINGERPRINTS={
+            resource_id: f'fixture:{resource_id}'
+            for resources in SCOPE_RESOURCES.values()
+            for resource_id in resources
+        },
     )
     return app
 

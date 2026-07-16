@@ -18,29 +18,106 @@ SCOPE_RESOURCES = {
 }
 
 
+FRED_INPUTS = (
+    'fred_FedFundsRate.csv',
+    'fred_YieldCurve_10Y2Y.csv',
+    'fred_CPI_core.csv',
+    'fred_Unemployment.csv',
+    'fred_VIX.csv',
+    'fred_HighYieldSpread.csv',
+    'fred_Treasury10Y.csv',
+)
+MACRO_INPUTS = ('pe_ttm.csv', 'cn10y.csv', 'sse_daily.csv')
+
+
+def _with_sidecars(directory: Path, names: tuple[str, ...]) -> tuple[Path, ...]:
+    return tuple(
+        path
+        for name in names
+        for path in (directory / name, directory / f'{name}.meta.json')
+    )
+
+
+def production_resource_paths(root: Path) -> dict[str, tuple[Path, ...]]:
+    """Exact server-owned files represented by every production resource ID."""
+    index_daily = (
+        root / 'data/_idx_summary.csv', root / 'data/_idx_summary.csv.meta.json',
+    )
+    etf_daily = (
+        root / 'data/_etf_summary.csv', root / 'data/_etf_summary.csv.meta.json',
+    )
+    fred = (
+        root / 'data/_fred_summary.csv', root / 'data/_fred_summary.csv.meta.json',
+        *_with_sidecars(root / 'data', FRED_INPUTS),
+    )
+    macro = _with_sidecars(root / 'data/a_share_macro', MACRO_INPUTS)
+    risk = (
+        root / 'strategy/risk_signals.json',
+        root / 'strategy/risk_signals.json.meta.json',
+    )
+    stock_csv = (
+        root / 'stock_trade_demo/stock_data.csv',
+        root / 'stock_trade_demo/stock_data.csv.meta.json',
+    )
+    stock_parquet = (
+        root / 'stock_trade_demo/stock_data.parquet',
+        root / 'stock_trade_demo/stock_data.parquet.meta.json',
+    )
+    sector_heat = (
+        root / 'strategy/backtest_sector_heat.csv',
+        root / 'strategy/backtest_sector_heat.csv.meta.json',
+    )
+    return {
+        'dataset:index': index_daily + etf_daily,
+        'dataset:index-daily': index_daily,
+        'dataset:etf-daily': etf_daily,
+        'dataset:aux': fred + macro + risk,
+        'dataset:fred': fred,
+        'dataset:a-share-macro': macro,
+        'artifact:risk-signals': risk,
+        'dataset:stock': stock_csv + stock_parquet,
+        'dataset:stock-csv': stock_csv,
+        'dataset:stock-parquet': stock_parquet,
+        'dataset:factor': sector_heat,
+        'artifact:sector-heat': sector_heat,
+    }
+
+
 def _path_fingerprint(paths: tuple[Path, ...]) -> str | None:
     records = []
     for path in paths:
         try:
             if path.is_dir():
-                children = sorted(
-                    child for child in path.rglob('*')
-                    if child.is_file() and (child.suffix == '.json' or child.name.endswith('.meta.json'))
-                )
+                children = sorted(child for child in path.rglob('*') if child.is_file())
+                if not children or any(child.is_symlink() for child in children):
+                    return None
+                child_fingerprint = _path_fingerprint(tuple(children))
+                if child_fingerprint is None:
+                    return None
                 records.append({
                     'path': str(path), 'directory': True,
-                    'fingerprint': _path_fingerprint(tuple(children)),
+                    'fingerprint': child_fingerprint,
                 })
                 continue
+            if path.is_symlink() or not path.is_file():
+                return None
             stat = path.stat()
-            raw = path.read_bytes() if stat.st_size <= 1024 * 1024 or path.name.endswith('.meta.json') else b''
+            if stat.st_size <= 0:
+                return None
+            with path.open('rb') as stream:
+                if stat.st_size <= 1024 * 1024 or path.name.endswith('.meta.json'):
+                    sample = stream.read()
+                else:
+                    head = stream.read(64 * 1024)
+                    stream.seek(max(stat.st_size - 64 * 1024, 0))
+                    sample = head + stream.read(64 * 1024)
             records.append({
                 'path': str(path), 'size': stat.st_size, 'mtime_ns': stat.st_mtime_ns,
-                'content_digest': hashlib.sha256(raw).hexdigest() if raw else None,
+                'content_digest': hashlib.sha256(sample).hexdigest(),
             })
         except OSError:
-            records.append({'path': str(path), 'missing': True})
-    if not records or all(item.get('missing') for item in records):
+            return None
+    if not records:
         return None
     return hashlib.sha256(canonical_json(records).encode('utf-8')).hexdigest()
 
@@ -53,30 +130,9 @@ def resource_fingerprint(resource_id: str) -> str | None:
     if isinstance(configured, dict) and resource_id in configured:
         value = configured[resource_id]
         return str(value) if value is not None else None
-    root = Path(__file__).resolve().parents[3]
-    resource_paths = {
-        'dataset:index': (
-            root / 'data/_idx_summary.csv', root / 'data/_idx_summary.csv.meta.json',
-            root / 'data/_etf_summary.csv', root / 'data/_etf_summary.csv.meta.json',
-        ),
-        'dataset:index-daily': (root / 'data/_idx_summary.csv', root / 'data/_idx_summary.csv.meta.json'),
-        'dataset:etf-daily': (root / 'data/_etf_summary.csv', root / 'data/_etf_summary.csv.meta.json'),
-        'dataset:aux': (
-            root / 'data/_fred_summary.csv', root / 'data/_fred_summary.csv.meta.json',
-            root / 'data/a_share_macro', root / 'strategy/risk_signals.json',
-        ),
-        'dataset:fred': (root / 'data/_fred_summary.csv', root / 'data/_fred_summary.csv.meta.json'),
-        'dataset:a-share-macro': (root / 'data/a_share_macro',),
-        'artifact:risk-signals': (root / 'strategy/risk_signals.json', root / 'strategy/risk_signals.json.meta.json'),
-        'dataset:stock': (
-            root / 'stock_trade_demo/stock_data.csv', root / 'stock_trade_demo/stock_data.csv.meta.json',
-            root / 'stock_trade_demo/stock_data.parquet', root / 'stock_trade_demo/stock_data.parquet.meta.json',
-        ),
-        'dataset:stock-csv': (root / 'stock_trade_demo/stock_data.csv', root / 'stock_trade_demo/stock_data.csv.meta.json'),
-        'dataset:stock-parquet': (root / 'stock_trade_demo/stock_data.parquet', root / 'stock_trade_demo/stock_data.parquet.meta.json'),
-        'dataset:factor': (root / 'strategy/backtest_sector_heat.csv', root / 'strategy/backtest_sector_heat.csv.meta.json'),
-        'artifact:sector-heat': (root / 'strategy/backtest_sector_heat.csv', root / 'strategy/backtest_sector_heat.csv.meta.json'),
-    }
+    configured_root = current_app.config.get('R0_RESOURCE_ROOT')
+    root = Path(configured_root) if configured_root else Path(__file__).resolve().parents[3]
+    resource_paths = production_resource_paths(root)
     paths = resource_paths.get(resource_id)
     return _path_fingerprint(paths) if paths is not None else None
 
