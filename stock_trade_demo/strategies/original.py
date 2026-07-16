@@ -144,6 +144,12 @@ class OriginalStrategy(BaseStrategy):
         """
         ind_col = '新版申万二级行业名称'
 
+        # stock_data 会保留上次产出的 val_pct。这里会按当前历史窗口重算，
+        # 所以必须先移除旧派生列；否则 merge 会生成 val_pct_x/val_pct_y，
+        # 后续读取 val_pct 时 KeyError，导致数据更新后无法重建首页缓存。
+        if 'val_pct' in df.columns:
+            df = df.drop(columns=['val_pct'])
+
         # 计算每个行业每期的 EP/BP 中位数（代表该行业估值水平）
         ind_val = df.groupby([ind_col, '交易日期']).agg(
             med_ep=('市盈率倒数', 'median'),
@@ -168,9 +174,15 @@ class OriginalStrategy(BaseStrategy):
             grp['val_pct'] = (ep_pct.fillna(0.5) + bp_pct.fillna(0.5)) / 2
             return grp
 
-        ind_val = ind_val.groupby(ind_col, group_keys=False).apply(
-            calc_val_percentile
-        )
+        # 显式逐组计算，避免 pandas 版本差异导致 groupby.apply 丢掉分组列。
+        grouped_values = [
+            calc_val_percentile(group)
+            for _, group in ind_val.groupby(ind_col)
+        ]
+        if grouped_values:
+            ind_val = pd.concat(grouped_values, ignore_index=True)
+        else:
+            ind_val = ind_val.assign(val_pct=np.nan)
         df = df.merge(
             ind_val[[ind_col, '交易日期', 'val_pct']],
             on=[ind_col, '交易日期'], how='left'
