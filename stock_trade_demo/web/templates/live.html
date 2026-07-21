@@ -231,6 +231,11 @@ function fmt(v, suffix='') {
   if (typeof v === 'number') return v.toFixed(suffix === '%' ? 2 : 4) + suffix;
   return String(v) + suffix;
 }
+function safeText(value, fallback = '') {
+  const node = document.createElement('span');
+  node.textContent = value == null || value === '' ? fallback : String(value);
+  return node.innerHTML;
+}
 function toast(msg, type='success') {
   const t = $('toast');
   t.textContent = msg;
@@ -311,8 +316,8 @@ function renderMetaPanel(meta) {
       <div class="panel-title">📊 策略验证概览（拟合数据周期 + OOS 实测）</div>
       <table class="meta-table">
         <tr>
-          <td class="meta-lbl">训练 cutoff</td><td class="meta-val">${meta.training_cutoff || '—'}</td>
-          <td class="meta-lbl">Holdout 区间</td><td class="meta-val">${period}</td>
+          <td class="meta-lbl">训练 cutoff</td><td class="meta-val">${safeText(meta.training_cutoff, '—')}</td>
+          <td class="meta-lbl">Holdout 区间</td><td class="meta-val">${safeText(period)}</td>
         </tr>
         <tr>
           <td class="meta-lbl">训练区 recent_6m</td>
@@ -373,7 +378,10 @@ function renderSignal(s) {
   }
   renderResearchWarning(s);
   if (s.error) {
-    $('signal-content').innerHTML = `<div class="empty">${s.error}</div>`;
+    const empty = document.createElement('div');
+    empty.className = 'empty';
+    empty.textContent = s.error;
+    $('signal-content').replaceChildren(empty);
     return;
   }
   // 用 live_* 字段（基于实盘当前持仓 vs 目标），不要用 prev_exposure（那是策略昨日仓位）
@@ -390,10 +398,10 @@ function renderSignal(s) {
     <div style="height:100%;width:${bs}%;background:${bsColor};transition:width 0.4s;border-radius:3px;"></div></div>`;
   const html = `
     <div class="signal-grid">
-      <div class="signal-cell"><div class="lbl">信号日 (T)</div><div class="val">${s.as_of_date}</div></div>
+      <div class="signal-cell"><div class="lbl">信号日 (T)</div><div class="val">${safeText(s.as_of_date, '—')}</div></div>
       <div class="signal-cell"><div class="lbl">当前手工仓位</div><div class="val">${(livePos * 100).toFixed(1)}%</div></div>
       <div class="signal-cell"><div class="lbl">T+1 目标仓位</div><div class="val">${(s.target_exposure * 100).toFixed(1)}%</div></div>
-      <div class="signal-cell"><div class="lbl">操作建议</div><div class="val ${deltaColor}">${liveLabel}</div></div>
+      <div class="signal-cell"><div class="lbl">操作建议</div><div class="val ${deltaColor}">${safeText(liveLabel, '—')}</div></div>
       <div class="signal-cell" style="grid-column:span 2">
         <div class="lbl">看多强度分 <span style="font-weight:400;opacity:0.6;font-size:11px;">（0=极空 · 50=中性 · 100=极多）</span></div>
         <div style="display:flex;align-items:center;gap:10px;margin-top:2px;">
@@ -408,12 +416,12 @@ function renderSignal(s) {
       <div class="signal-cell"><div class="lbl">ETF 收盘参考</div><div class="val">${fmt(s.ref_close)}</div></div>
       <div class="signal-cell"><div class="lbl">ETF 开盘参考</div><div class="val">${fmt(s.ref_open)}</div></div>
     </div>
-    <div class="signal-reason"><strong>策略原因：</strong>${s.reason_summary || '—'}</div>
-    ${s.action_rationale ? `<div class="panel panel-rationale"><div class="panel-title">▶ 行动详解（${liveLabel}）</div>${s.action_rationale}</div>` : ''}
-    ${(s.risks && s.risks.length) ? `<div class="panel panel-risk"><div class="panel-title">⚠ 看多潜在风险（${s.risks.length} 条）</div><ul>${s.risks.map(x => `<li>${x}</li>`).join('')}</ul>${s.risk_signals_as_of ? `<div style="margin-top:8px;font-size:12px;color:#8b5e5e;">风险面板数据日期：${s.risk_signals_as_of}${s.risk_signals_generated_at ? ` · 生成于 ${s.risk_signals_generated_at}` : ''}</div>` : ''}</div>` : ''}
-    ${(s.opportunities && s.opportunities.length) ? `<div class="panel panel-opp"><div class="panel-title">↗ 看空时的其他机会（${s.opportunities.length} 条）</div><ul>${s.opportunities.map(x => `<li>${x}</li>`).join('')}</ul>${s.risk_signals_as_of ? `<div style="margin-top:8px;font-size:12px;color:#3a6b55;">机会面板数据日期：${s.risk_signals_as_of}${s.risk_signals_generated_at ? ` · 生成于 ${s.risk_signals_generated_at}` : ''}</div>` : ''}</div>` : ''}
+    <div class="signal-reason"><strong>策略原因：</strong>${safeText(s.reason_summary, '—')}</div>
+    ${s.action_rationale ? `<div class="panel panel-rationale"><div class="panel-title">▶ 行动详解（${safeText(liveLabel)}）</div>${safeText(s.action_rationale)}</div>` : ''}
+    ${(s.risks && s.risks.length) ? `<div class="panel panel-risk"><div class="panel-title">⚠ 看多潜在风险（${s.risks.length} 条）</div><ul>${s.risks.map(x => `<li>${safeText(x)}</li>`).join('')}</ul>${s.risk_signals_as_of ? `<div style="margin-top:8px;font-size:12px;color:#8b5e5e;">风险面板数据日期：${safeText(s.risk_signals_as_of)}${s.risk_signals_generated_at ? ` · 生成于 ${safeText(s.risk_signals_generated_at)}` : ''}</div>` : ''}</div>` : ''}
+    ${(s.opportunities && s.opportunities.length) ? `<div class="panel panel-opp"><div class="panel-title">↗ 看空时的其他机会（${s.opportunities.length} 条）</div><ul>${s.opportunities.map(x => `<li>${safeText(x)}</li>`).join('')}</ul>${s.risk_signals_as_of ? `<div style="margin-top:8px;font-size:12px;color:#3a6b55;">机会面板数据日期：${safeText(s.risk_signals_as_of)}${s.risk_signals_generated_at ? ` · 生成于 ${safeText(s.risk_signals_generated_at)}` : ''}</div>` : ''}</div>` : ''}
     ${renderMetaPanel(s.experiment_meta)}
-    <div class="signal-meta">${s.etf_name || ''} (${s.etf_code || '—'})｜${s.exec_basis}</div>
+    <div class="signal-meta">${safeText(s.etf_name)} (${safeText(s.etf_code, '—')})｜${safeText(s.exec_basis)}</div>
   `;
   $('signal-content').innerHTML = html;
   $('f-signal-target').value = s.target_exposure;
@@ -537,15 +545,15 @@ async function loadRecords(generation = refreshGeneration, strategy = currentStr
     const cap = parseFloat(r.capital) || currentMeta.initial_capital;
     const holding = (isFinite(price) && isFinite(shares)) ? price * shares : null;
     html += `<tr>
-      <td>${r.date}</td>
+      <td>${safeText(r.date, '—')}</td>
       <td class="num">${r.signal_target ? (parseFloat(r.signal_target) * 100).toFixed(1) + '%' : '—'}</td>
       <td class="num">${isFinite(price) ? price.toFixed(3) : '—'}</td>
       <td class="num">${isFinite(shares) ? shares.toLocaleString('en-US') : '—'}</td>
       <td class="num">${holding !== null ? fmtMoney(holding) : '—'}</td>
       <td class="num">${cap ? fmtMoney(cap) : '—'}</td>
       <td class="num"><strong>${(parseFloat(r.actual_position) * 100).toFixed(2)}%</strong></td>
-      <td>${r.notes || ''}</td>
-      <td>${r.created_at}</td>
+      <td>${safeText(r.notes)}</td>
+      <td>${safeText(r.created_at, '—')}</td>
       <td><button class="btn btn-danger" data-record-id="${r.record_id}" onclick="deleteRecord(${r.record_id})">删除</button></td>
     </tr>`;
   }
@@ -593,12 +601,12 @@ async function loadReconcile(generation = refreshGeneration, strategy = currentS
     $('recon-summary').innerHTML = `
       <div class="recon-pill">状态：<span class="v" style="color:var(--amber)">等待数据刷新</span></div>
       <div class="recon-pill">已录入：<span class="v">${data.live_records} 条</span></div>
-      <div class="recon-pill">缓存截至：<span class="v">${data.cache_max_date || '—'}</span></div>
-      <div class="recon-pill">首条录入：<span class="v">${data.first_record_date}</span></div>
+      <div class="recon-pill">缓存截至：<span class="v">${safeText(data.cache_max_date, '—')}</span></div>
+      <div class="recon-pill">首条录入：<span class="v">${safeText(data.first_record_date, '—')}</span></div>
     `;
     $('reconcile-chart').innerHTML = '';
     $('recon-msg').style.display = 'block';
-    $('recon-msg').innerHTML = data.message;
+    $('recon-msg').textContent = data.message || '';
     if (reconChart) { reconChart.dispose(); reconChart = null; }
     return;
   }
@@ -628,7 +636,7 @@ async function loadReconcile(generation = refreshGeneration, strategy = currentS
   const diff = ((finalLive - finalStrat) * 100).toFixed(2);
   const diffColor = (finalLive - finalStrat) >= 0 ? 'var(--green)' : 'var(--red)';
   $('recon-summary').innerHTML = `
-    <div class="recon-pill">起点：<span class="v">${data.start_date}</span></div>
+    <div class="recon-pill">起点：<span class="v">${safeText(data.start_date, '—')}</span></div>
     <div class="recon-pill">手工快照数：<span class="v">${data.live_records}</span></div>
     <div class="recon-pill">策略 NAV：<span class="v">${finalStrat}</span></div>
     <div class="recon-pill">手工记录 NAV：<span class="v">${finalLive}</span></div>

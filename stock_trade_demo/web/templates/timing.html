@@ -287,6 +287,12 @@
   let _loadStartTime = 0;
   const charts = {};
 
+  function safeText(value, fallback = '') {
+    const node = document.createElement('span');
+    node.textContent = value == null || value === '' ? fallback : String(value);
+    return node.innerHTML;
+  }
+
   function fmtDelta(v, digits = 2) {
     if (v == null || v === '' || Number.isNaN(Number(v))) return '—';
     const n = Number(v);
@@ -535,8 +541,8 @@
       <div class="index-card" id="card-${s.id}">
         <div class="card-header">
           <div class="card-title-row">
-            <div class="card-title">${s.index_name || s.name}</div>
-            <div class="card-desc">${s.name}</div>
+            <div class="card-title">${safeText(s.index_name || s.name)}</div>
+            <div class="card-desc">${safeText(s.name)}</div>
           </div>
         </div>
         <div class="metrics-strip" id="metrics2-${s.id}">
@@ -598,7 +604,7 @@
         </div>
         <div class="param-section" id="param-section-${s.id}">
           <div class="param-header">
-            <div class="param-title">${s.index_name || s.name} · 查询已有缓存的参数</div>
+            <div class="param-title">${safeText(s.index_name || s.name)} · 查询已有缓存的参数</div>
             <button class="btn btn-primary" onclick="runSingleBacktest('${s.id}')">查询对应缓存结果</button>
           </div>
           <div id="best-profile-${s.id}"></div>

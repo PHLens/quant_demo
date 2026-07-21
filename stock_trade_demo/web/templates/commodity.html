@@ -133,6 +133,12 @@ function showLoading(msg) {
 }
 function hideLoading() { document.getElementById('loading').classList.add('hidden'); }
 
+function safeText(value, fallback = '') {
+  const node = document.createElement('span');
+  node.textContent = value == null || value === '' ? fallback : String(value);
+  return node.innerHTML;
+}
+
 async function init() {
   showLoading('加载大宗商品数据...');
   try {
@@ -220,8 +226,8 @@ function buildCard(meta, data) {
   div.innerHTML = `
     <div class="card-header">
       <div>
-        <div class="card-title" style="color:var(--accent-light);">${meta.name} · ${meta.index_name}</div>
-        <div style="font-size:12px;color:var(--muted);margin-top:2px;">${meta.description || ''}</div>
+        <div class="card-title" style="color:var(--accent-light);">${safeText(meta.name)} · ${safeText(meta.index_name)}</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:2px;">${safeText(meta.description)}</div>
       </div>
     </div>
 
@@ -232,7 +238,7 @@ function buildCard(meta, data) {
       <div class="metric-chip"><div class="metric-label">年化收益</div><div class="metric-value">${formatPct(m.annual_return)}</div></div>
       <div class="metric-chip"><div class="metric-label">累积净值</div><div class="metric-value">${formatNum(nav, 4)}</div></div>
       <div class="metric-chip"><div class="metric-label">月胜率</div><div class="metric-value">${formatPct(data.win_rate)}</div></div>
-      <div class="metric-chip"><div class="metric-label">当前信号日</div><div class="metric-value" style="font-size:12px;">${sig.as_of_date || '—'}</div></div>
+      <div class="metric-chip"><div class="metric-label">当前信号日</div><div class="metric-value" style="font-size:12px;">${safeText(sig.as_of_date, '—')}</div></div>
     </div>
 
     <div class="position-chip" style="margin-top:12px;">固定 OOS：${data.holdout_metrics || data.oos_metrics ? '当前缓存响应已提供，请结合对应指标阅读' : '当前缓存响应未提供 OOS 指标'}</div>
@@ -244,13 +250,13 @@ function buildCard(meta, data) {
     <!-- Current cached signal -->
     <div style="margin-top:12px;font-size:12px;color:var(--text-secondary);">
       <span class="signal-badge ${posClass}">当前缓存信号：${posLabel} · ${expPct}</span><br>
-      <span style="display:inline-block;margin-top:8px;">信号原因：${sig.current_reason || '—'}</span><br>
-      ${sig.etf_code ? 'ETF: ' + sig.etf_code + ' · ' + (sig.etf_name || '') : ''}
+      <span style="display:inline-block;margin-top:8px;">信号原因：${safeText(sig.current_reason, '—')}</span><br>
+      ${sig.etf_code ? 'ETF: ' + safeText(sig.etf_code) + ' · ' + safeText(sig.etf_name) : ''}
     </div>
 
     <div class="positions-grid" style="margin-top:12px;">
       <div class="position-chip"><b>当前仓位</b><br>目标: ${expPct} · 信号: ${posLabel}</div>
-      <div class="position-chip"><b>训练截止</b><br>${data.training_cutoff || '—'}</div>
+      <div class="position-chip"><b>训练截止</b><br>${safeText(data.training_cutoff, '—')}</div>
     </div>
 
     <!-- Parameters -->
@@ -259,19 +265,19 @@ function buildCard(meta, data) {
       <div style="margin-top:8px;">
         ${params.map(p => `
           <div class="param-row">
-            <label>${p.label}${p.unit ? ' (' + p.unit + ')' : ''}</label>
+            <label>${safeText(p.label)}${p.unit ? ' (' + safeText(p.unit) + ')' : ''}</label>
             <input type="number" value="${p.default}" step="${p.step || 1}"
               data-key="${p.key}" data-strategy="${meta.id}" onchange="onParamChange(this)"
               style="width:${p.key.length > 12 ? 100 : 70}px;">
-            <span style="font-size:11px;color:var(--muted);">${p.description || ''}</span>
+            <span style="font-size:11px;color:var(--muted);">${safeText(p.description)}</span>
           </div>
         `).join('')}
         <div style="margin-top:8px;">
           ${formulas.map(f => `
             <div class="formula-block">
-              <div class="formula-title">${f.title}</div>
-              <div class="formula-expr">${f.expression}</div>
-              <div class="formula-desc">${f.explanation}</div>
+              <div class="formula-title">${safeText(f.title)}</div>
+              <div class="formula-expr">${safeText(f.expression)}</div>
+              <div class="formula-desc">${safeText(f.explanation)}</div>
             </div>
           `).join('')}
         </div>

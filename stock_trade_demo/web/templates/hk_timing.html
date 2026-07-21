@@ -279,6 +279,12 @@
     return '¥' + Number(n).toLocaleString('zh-CN', {minimumFractionDigits:2, maximumFractionDigits:2});
   }
 
+  function safeText(value, fallback = '') {
+    const node = document.createElement('span');
+    node.textContent = value == null || value === '' ? fallback : String(value);
+    return node.innerHTML;
+  }
+
   /* ── Data loading ── */
   async function fetchInfo() {
     const resp = await fetch('/api/hk_timing/info');
@@ -350,8 +356,8 @@
       <div class="card-header">
         <div class="card-title-row">
           <div>
-            <div class="card-title">${meta.name}</div>
-            <div class="card-desc">${meta.description || ''}</div>
+            <div class="card-title">${safeText(meta.name)}</div>
+            <div class="card-desc">${safeText(meta.description)}</div>
           </div>
         </div>
       </div>
@@ -362,14 +368,14 @@
         <div class="metric-cell"><div class="lbl">年化收益</div><div class="val ${valClass(parseMetricVal(m.annual_return))}">${m.annual_return || '—'}</div></div>
         <div class="metric-cell"><div class="lbl">累计收益</div><div class="val ${valClass(parseMetricVal(m.total_return_pct))}">${m.total_return_pct || '—'}</div></div>
         <div class="metric-cell"><div class="lbl">累积净值</div><div class="val ${valClass(parseMetricVal(m.cumulative_return)-1)}">${formatNumVal(m.cumulative_return, 4)}</div></div>
-        <div class="metric-cell"><div class="lbl">信号日期</div><div class="val" style="font-size:12px;">${sig.as_of_date || '—'}</div></div>
+        <div class="metric-cell"><div class="lbl">信号日期</div><div class="val" style="font-size:12px;">${safeText(sig.as_of_date, '—')}</div></div>
       </div>
 
       <div class="card-footer">固定 OOS：${data.holdout_metrics || data.oos_metrics ? '当前缓存响应已提供，请结合对应指标阅读' : '当前缓存响应未提供 OOS 指标'}</div>
 
       <div class="position-strip">
-        <div class="position-item"><div class="lbl">ETF代码</div><div class="val" style="font-size:13px;">${sig.etf_code || '—'} ${sig.etf_name || ''}</div></div>
-        <div class="position-item"><div class="lbl">最近交易</div><div class="val" style="font-size:13px;">${filterTrades.length ? filterTrades[filterTrades.length-1].date + ' ' + (filterTrades[filterTrades.length-1].action==='buy'?'买入':'卖出') : '无'}</div></div>
+        <div class="position-item"><div class="lbl">ETF代码</div><div class="val" style="font-size:13px;">${safeText(sig.etf_code, '—')} ${safeText(sig.etf_name)}</div></div>
+        <div class="position-item"><div class="lbl">最近交易</div><div class="val" style="font-size:13px;">${filterTrades.length ? safeText(filterTrades[filterTrades.length-1].date) + ' ' + (filterTrades[filterTrades.length-1].action==='buy'?'买入':'卖出') : '无'}</div></div>
         <div class="position-item"><div class="lbl">总交易次数</div><div class="val" style="font-size:13px;">${m.rebalance_count || filterTrades.length} 次</div></div>
         <div class="position-item"><div class="lbl">平均仓位</div><div class="val" style="font-size:13px;">${m.avg_exposure != null ? (m.avg_exposure*100).toFixed(1)+'%' : '—'}</div></div>
       </div>
@@ -388,17 +394,17 @@
       </div>
 
       <div class="card-footer">
-        <strong>当前信号原因：</strong>${sig.current_reason || sig.reason_summary || '—'}
+        <strong>当前信号原因：</strong>${safeText(sig.current_reason || sig.reason_summary, '—')}
       </div>
 
       <div class="formula-section">
         <div class="formula-title">📐 策略原理</div>
-        <div class="formula-summary">${meta.principle_summary || ''}</div>
+        <div class="formula-summary">${safeText(meta.principle_summary)}</div>
         ${formulas.map(f => `
           <div class="formula-block">
-            <div class="formula-block-title">${f.title}</div>
-            <div class="formula-expr">${f.expression}</div>
-            ${f.explanation ? `<div class="formula-note">${f.explanation}</div>` : ''}
+            <div class="formula-block-title">${safeText(f.title)}</div>
+            <div class="formula-expr">${safeText(f.expression)}</div>
+            ${f.explanation ? `<div class="formula-note">${safeText(f.explanation)}</div>` : ''}
           </div>
         `).join('')}
       </div>
@@ -410,8 +416,8 @@
             const val = p.default != null ? p.default : '';
             return `
             <div class="factor-item">
-              <div class="factor-name">${p.label}${p.unit ? ' ('+p.unit+')' : ''}</div>
-              <div class="factor-desc">${p.description || ''}</div>
+              <div class="factor-name">${safeText(p.label)}${p.unit ? ' ('+safeText(p.unit)+')' : ''}</div>
+              <div class="factor-desc">${safeText(p.description)}</div>
               <div class="slider-row">
                 <input type="range" min="${p.min != null ? p.min : 0}" max="${p.max != null ? p.max : 100}" step="${p.step || 1}" value="${val}" data-key="${p.key}" data-strategy="${sid}" oninput="this.nextElementSibling.textContent=this.value" />
                 <span class="slider-val">${val}</span>
