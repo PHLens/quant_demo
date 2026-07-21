@@ -483,35 +483,53 @@
     const data = allData[sid];
     const tbody = document.getElementById('trade-history-body');
     const etfCode = (data?.current_signal?.etf_code) || '—';
+    tbody.replaceChildren();
+
+    function showEmptyTradeRow(message) {
+      const row = document.createElement('tr');
+      const cell = document.createElement('td');
+      cell.colSpan = 11;
+      cell.style.cssText = 'color:var(--muted);text-align:center;';
+      cell.textContent = message;
+      row.appendChild(cell);
+      tbody.appendChild(row);
+    }
+
+    function appendTradeCell(row, value, className = '') {
+      const cell = document.createElement('td');
+      if (className) cell.className = className;
+      cell.textContent = value;
+      row.appendChild(cell);
+    }
+
     if (!data || !data.trade_details) {
-      tbody.innerHTML = '<tr><td colspan="11" style="color:var(--muted);text-align:center;">暂无交易数据</td></tr>';
+      showEmptyTradeRow('暂无交易数据');
       return;
     }
     const trades = data.trade_details.filter(t => t.action === 'buy' || t.action === 'sell');
     if (!trades.length) {
-      tbody.innerHTML = '<tr><td colspan="11" style="color:var(--muted);text-align:center;">暂无交易记录</td></tr>';
+      showEmptyTradeRow('暂无交易记录');
       return;
     }
-    tbody.innerHTML = trades.map((t) => {
+    trades.forEach((t) => {
       const action = t.action === 'buy' ? '买入' : '卖出';
       const cls = t.action === 'buy' ? 'action-buy' : 'action-sell';
       const pnl = t.realized_pnl;
       const pnlPct = t.realized_pnl_pct;
-      return `
-      <tr>
-        <td>${t.date || '—'}</td>
-        <td class="${cls}">${action}</td>
-        <td>${t.etf_code || etfCode}</td>
-        <td>${t.trade_price != null ? Number(t.trade_price).toFixed(3) : '—'}</td>
-        <td>${t.quantity != null ? Number(t.quantity).toLocaleString('zh-CN') : '—'}</td>
-        <td>${formatCurrencyVal(t.trade_amount)}</td>
-        <td>${formatCurrencyVal(t.fee_amount)}</td>
-        <td>${formatCurrencyVal(t.holding_value)}</td>
-        <td class="${valClass(pnl)}">${pnl != null ? formatCurrencyVal(pnl) : '—'}</td>
-        <td class="${valClass(pnlPct)}">${pnlPct != null ? formatPctVal(pnlPct) : '—'}</td>
-        <td>${t.nav != null ? Number(t.nav).toFixed(4) : '—'}</td>
-      </tr>`;
-    }).join('');
+      const row = document.createElement('tr');
+      appendTradeCell(row, t.date || '—');
+      appendTradeCell(row, action, cls);
+      appendTradeCell(row, t.etf_code || etfCode);
+      appendTradeCell(row, t.trade_price != null ? Number(t.trade_price).toFixed(3) : '—');
+      appendTradeCell(row, t.quantity != null ? Number(t.quantity).toLocaleString('zh-CN') : '—');
+      appendTradeCell(row, formatCurrencyVal(t.trade_amount));
+      appendTradeCell(row, formatCurrencyVal(t.fee_amount));
+      appendTradeCell(row, formatCurrencyVal(t.holding_value));
+      appendTradeCell(row, pnl != null ? formatCurrencyVal(pnl) : '—', valClass(pnl));
+      appendTradeCell(row, pnlPct != null ? formatPctVal(pnlPct) : '—', valClass(pnlPct));
+      appendTradeCell(row, t.nav != null ? Number(t.nav).toFixed(4) : '—');
+      tbody.appendChild(row);
+    });
   }
 
   async function applyParams(sid) {

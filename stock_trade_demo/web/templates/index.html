@@ -2364,42 +2364,87 @@ function renderSectorHeatRanking(ranking) {
   if (!el) return;
 
   function renderOne(title, rankingList, keyName, colName) {
-    if (!rankingList || !rankingList.length) return '';
+    if (!rankingList || !rankingList.length) return null;
     const maxAbs = Math.max(...rankingList.map(r => Math.abs(r[keyName])), 0.01);
-    const rows = rankingList.map((r, i) => {
+    const section = document.createElement('div');
+    section.style.marginBottom = '14px';
+
+    const heading = document.createElement('div');
+    heading.style.cssText = 'font-size:12px;font-weight:700;color:var(--text-secondary);margin-bottom:8px;padding:0 4px;';
+    heading.textContent = title;
+    section.appendChild(heading);
+
+    const table = document.createElement('table');
+    table.className = 'heat-rank-table';
+    const thead = document.createElement('thead');
+    const headerRow = document.createElement('tr');
+    ['#', '行业', colName, ''].forEach(label => {
+      const th = document.createElement('th');
+      th.textContent = label;
+      headerRow.appendChild(th);
+    });
+    thead.appendChild(headerRow);
+    table.appendChild(thead);
+
+    const tbody = document.createElement('tbody');
+    rankingList.forEach((r, i) => {
       const v = r[keyName];
       const color = v >= 0 ? '#00b894' : '#d63031';
       const barW = Math.round(Math.abs(v) / maxAbs * 60);
-      return `<tr>
-        <td class="rank-num">${i + 1}</td>
-        <td style="max-width:78px;overflow:hidden;text-overflow:ellipsis;" title="${r.industry}">${r.industry}</td>
-        <td style="color:${color};font-weight:700;font-size:12px;">${v >= 0 ? '+' : ''}${v.toFixed(2)}%</td>
-        <td><span class="heat-rank-bar" style="width:${barW}px;background:${color};"></span></td>
-      </tr>`;
-    }).join('');
-    return `
-      <div style="margin-bottom:14px;">
-        <div style="font-size:12px;font-weight:700;color:var(--text-secondary);margin-bottom:8px;padding:0 4px;">${title}</div>
-        <table class="heat-rank-table">
-          <thead><tr><th>#</th><th>行业</th><th>${colName}</th><th></th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </div>`;
+      const row = document.createElement('tr');
+
+      const rankCell = document.createElement('td');
+      rankCell.className = 'rank-num';
+      rankCell.textContent = String(i + 1);
+      row.appendChild(rankCell);
+
+      const industryCell = document.createElement('td');
+      industryCell.style.cssText = 'max-width:78px;overflow:hidden;text-overflow:ellipsis;';
+      industryCell.textContent = r.industry || '—';
+      industryCell.title = r.industry || '';
+      row.appendChild(industryCell);
+
+      const valueCell = document.createElement('td');
+      valueCell.style.cssText = `color:${color};font-weight:700;font-size:12px;`;
+      valueCell.textContent = `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
+      row.appendChild(valueCell);
+
+      const barCell = document.createElement('td');
+      const bar = document.createElement('span');
+      bar.className = 'heat-rank-bar';
+      bar.style.width = `${barW}px`;
+      bar.style.background = color;
+      barCell.appendChild(bar);
+      row.appendChild(barCell);
+
+      tbody.appendChild(row);
+    });
+    table.appendChild(tbody);
+    section.appendChild(table);
+    return section;
   }
+
+  el.replaceChildren();
 
   // 新结构：{ latest: [...], month: [...] }
   if (ranking && !Array.isArray(ranking) && (ranking.latest || ranking.month)) {
-    el.innerHTML = `
-      ${renderOne('最新一周涨跌幅排名', ranking.latest || [], 'latest_ret', '最新一周')}
-      ${renderOne('近一个月涨跌幅排名', ranking.month || [], 'month_ret', '近一个月')}
-    `;
+    const latest = renderOne('最新一周涨跌幅排名', ranking.latest || [], 'latest_ret', '最新一周');
+    const month = renderOne('近一个月涨跌幅排名', ranking.month || [], 'month_ret', '近一个月');
+    if (latest) el.appendChild(latest);
+    if (month) el.appendChild(month);
     return;
   }
 
   // 兼容旧结构（单榜单）
   if (!ranking || !ranking.length) return;
   const useLatest = ranking[0] && ranking[0].latest_ret !== undefined;
-  el.innerHTML = renderOne(useLatest ? '最新一周涨跌幅排名' : '近4周均值排名', ranking, useLatest ? 'latest_ret' : 'avg_ret_4w', useLatest ? '最新一周' : '均周收益');
+  const section = renderOne(
+    useLatest ? '最新一周涨跌幅排名' : '近4周均值排名',
+    ranking,
+    useLatest ? 'latest_ret' : 'avg_ret_4w',
+    useLatest ? '最新一周' : '均周收益'
+  );
+  if (section) el.appendChild(section);
 }
 </script>
 
