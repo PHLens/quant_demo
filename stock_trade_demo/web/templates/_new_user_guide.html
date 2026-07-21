@@ -1,0 +1,48 @@
+<div class="qr-drawer-layer" data-guide-layer hidden>
+  <button class="qr-drawer-backdrop" type="button" data-guide-close aria-label="关闭如何阅读指南"></button>
+  <aside class="qr-drawer qr-drawer--guide" id="new-user-guide" role="dialog" aria-modal="true" aria-labelledby="new-user-guide-title" tabindex="-1">
+    <div class="qr-drawer__header">
+      <div>
+        <p class="qr-eyebrow">新手指南</p>
+        <h2 id="new-user-guide-title">五步读懂研究页面</h2>
+      </div>
+      <button class="qr-icon-button" type="button" data-guide-close aria-label="关闭如何阅读指南">×</button>
+    </div>
+
+    <ol class="qr-guide-steps">
+      <li>
+        <strong>先确认时间。</strong>
+        看数据截止日，以及页面提供时的信号日或结算日；日期过旧时，先不要解释最新市场状态。
+      </li>
+      <li>
+        <strong>再确认研究口径。</strong>
+        看策略假设、标的、对照基准和参数。页面读取既有缓存，改变参数是在查询对应缓存，不代表浏览器在线计算。
+      </li>
+      <li>
+        <strong>风险先于收益。</strong>
+        先看最大回撤和 Calmar，再看年化、累计收益与基准曲线，避免只被最终净值吸引。
+      </li>
+      <li>
+        <strong>区分验证窗口。</strong>
+        固定 Holdout/OOS 只在响应明确提供时展示；1m/1q/6m 是滚动近期切片，样本少时不能当成多次独立验证。
+      </li>
+      <li>
+        <strong>最后看细节与动作。</strong>
+        持仓、交易、因子和当前信号用来解释结果；“更新数据”是独立维护操作，不是阅读页面的必经步骤。
+      </li>
+    </ol>
+
+    <section class="qr-guide-glossary" aria-labelledby="guide-glossary-title">
+      <h3 id="guide-glossary-title">常用词典</h3>
+      <dl>
+        <div><dt>最大回撤</dt><dd>历史高点到随后低点的最大跌幅。</dd></div>
+        <div><dt>Calmar</dt><dd>年化收益除以最大回撤绝对值，用来观察风险收益效率。</dd></div>
+        <div><dt>Benchmark</dt><dd>对照基准，表示不用该策略时的市场参考表现。</dd></div>
+        <div><dt>Training cutoff</dt><dd>训练数据的截止时间。</dd></div>
+        <div><dt>Holdout / OOS</dt><dd>未用于调参、仅用于最终观察的数据；响应没提供就不代表已经验收。</dd></div>
+        <div><dt>近期切片</dt><dd>滚动的近 1 月、1 季或半年视图，不等同于固定 OOS。</dd></div>
+        <div><dt>缓存结果</dt><dd>后端已经生成并保存的结果；浏览器只读取，不在线重新计算。</dd></div>
+      </dl>
+    </section>
+  </aside>
+</div>

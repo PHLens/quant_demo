@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}量化研究工作台{% endblock %}</title>
+  {% block page_head %}{% endblock %}
+  <link rel="stylesheet" href="/static/css/ui.css">
+</head>
+<body class="qr-page qr-page-{{ page_key|default('research') }}">
+  <a class="qr-skip-link" href="#main-content">跳到主要内容</a>
+
+  <header class="qr-shell-header">
+    <div class="qr-shell-header__inner">
+      <a class="qr-brand" href="/" aria-label="量化研究工作台首页">
+        <span class="qr-brand__mark" aria-hidden="true">Q</span>
+        <span>
+          <strong>量化研究工作台</strong>
+          <small>离线缓存研究视图</small>
+        </span>
+      </a>
+
+      <nav class="qr-primary-nav" aria-label="主要页面">
+        <a href="/"{% if page_key == 'select' %} aria-current="page"{% endif %}>选股研究</a>
+        <span class="qr-nav-group" aria-label="市场择时">
+          <span class="qr-nav-group__label">市场择时</span>
+          <a href="/timing"{% if page_key == 'cn-timing' %} aria-current="page"{% endif %}>A股</a>
+          <a href="/us_timing"{% if page_key == 'us-timing' %} aria-current="page"{% endif %}>美股</a>
+          <a href="/hk_timing"{% if page_key == 'hk-timing' %} aria-current="page"{% endif %}>港股</a>
+          <a href="/commodity"{% if page_key == 'commodity' %} aria-current="page"{% endif %}>商品</a>
+        </span>
+        <a href="/live"{% if page_key == 'live' %} aria-current="page"{% endif %}>持仓快照</a>
+      </nav>
+
+      <div class="qr-shell-actions">
+        <button class="qr-shell-button" type="button" data-guide-open aria-controls="new-user-guide" aria-expanded="false">
+          如何阅读
+        </button>
+        <button class="qr-shell-button qr-shell-button--menu" type="button" data-mobile-nav-open aria-controls="mobile-nav-drawer" aria-expanded="false">
+          菜单
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <div class="qr-drawer-layer" data-mobile-nav-layer hidden>
+    <button class="qr-drawer-backdrop" type="button" data-mobile-nav-close aria-label="关闭页面菜单"></button>
+    <aside class="qr-drawer qr-drawer--nav" id="mobile-nav-drawer" role="dialog" aria-modal="true" aria-labelledby="mobile-nav-title" tabindex="-1">
+      <div class="qr-drawer__header">
+        <h2 id="mobile-nav-title">页面菜单</h2>
+        <button class="qr-icon-button" type="button" data-mobile-nav-close aria-label="关闭页面菜单">×</button>
+      </div>
+      <nav class="qr-mobile-nav" aria-label="移动端主要页面">
+        <a href="/"{% if page_key == 'select' %} aria-current="page"{% endif %}>A 股多因子选股研究</a>
+        <span class="qr-mobile-nav__label">市场择时</span>
+        <a href="/timing"{% if page_key == 'cn-timing' %} aria-current="page"{% endif %}>A 股择时</a>
+        <a href="/us_timing"{% if page_key == 'us-timing' %} aria-current="page"{% endif %}>美股择时</a>
+        <a href="/hk_timing"{% if page_key == 'hk-timing' %} aria-current="page"{% endif %}>港股择时</a>
+        <a href="/commodity"{% if page_key == 'commodity' %} aria-current="page"{% endif %}>大宗商品择时</a>
+        <a href="/live"{% if page_key == 'live' %} aria-current="page"{% endif %}>持仓快照与对账</a>
+      </nav>
+    </aside>
+  </div>
+
+  <main id="main-content" class="qr-main" tabindex="-1">
+    {% block content %}{% endblock %}
+  </main>
+
+  {% include "_new_user_guide.html" %}
+  <script src="/static/js/ui_shell.js"></script>
+</body>
+</html>
