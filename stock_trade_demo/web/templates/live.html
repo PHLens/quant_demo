@@ -1,9 +1,7 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>实盘记录与对账</title>
+{% extends "base.html" %}
+{% set page_key = "live" %}
+{% block title %}持仓快照与对账{% endblock %}
+{% block page_head %}
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
 <script src="/static/js/data_update_flow.js"></script>
   <style>
@@ -109,27 +107,30 @@
     .toast.success { background: var(--green); }
     .toast.error { background: var(--red); }
   </style>
-</head>
-<body>
+{% endblock %}
+{% block content %}
 <div class="app">
-  <div class="header">
-    <div>
-      <h1>实盘记录与对账</h1>
-      <div class="subtitle">把策略信号转化为可执行的入场指令；记录实际下单；对比策略 NAV 与实盘 NAV 的偏差</div>
+  <section class="qr-page-intro" aria-labelledby="page-title">
+    <div class="qr-page-intro__copy">
+      <p class="qr-eyebrow">手工记录 · 策略对账</p>
+      <h1 id="page-title">持仓快照与对账</h1>
+      <div class="subtitle">本页只保存手工持仓快照并与策略 NAV 对照；不连接券商、不发送订单，也不是逐笔成交或现金流水。</div>
+      <div class="qr-context-line" aria-label="当前页面上下文">
+        <span class="qr-context-chip qr-context-chip--cache">当前缓存信号</span>
+        <span class="qr-context-chip">记录方式：手工</span>
+      </div>
     </div>
-    <div class="header-links">
-      <a href="/">选股</a>
-      <a href="/timing">A股择时</a>
-      <a href="/us_timing">美股择时</a>
-      <a href="/hk_timing">港股择时</a>
-      <a href="/commodity">大宗商品</a>
+    <div class="qr-page-intro__actions">
+      <button class="btn btn-secondary" onclick="refreshAll()">刷新当前视图</button>
     </div>
-  </div>
+  </section>
+
+  <p class="qr-reading-note"><strong>阅读顺序：</strong>先看跨市场缓存信号，再选择策略查看目标仓位与原因；手工保存快照后，最后看历史记录与策略 NAV 对账。</p>
 
   <!-- Signal Dashboard -->
   <div id="signal-dashboard" class="card" style="margin-bottom:14px;padding:14px 18px;">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-      <h2 style="font-size:15px;font-weight:700;margin:0;">择时信号一览</h2>
+      <h2 style="font-size:15px;font-weight:700;margin:0;">当前缓存信号一览</h2>
       <span style="font-size:11px;color:var(--muted);">点击策略卡片查看详情</span>
     </div>
     <div id="signal-dash-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(175px,1fr));gap:8px;">
@@ -149,13 +150,13 @@
   <div class="grid-2">
     <!-- 最新信号卡 -->
     <div class="card">
-      <h2>最新入市信号 <span id="status-badge" class="badge"></span></h2>
+      <h2>当前缓存信号 <span id="status-badge" class="badge"></span></h2>
       <div id="signal-content"><div class="empty">加载中…</div></div>
     </div>
 
     <!-- 实盘录入表 -->
     <div class="card">
-      <h2>录入实盘下单 <span id="capital-hint" class="badge" style="background:#eaf4fc;color:var(--accent);">初始资金 ¥50,000</span></h2>
+      <h2>保存手工持仓快照 <span id="capital-hint" class="badge" style="background:#eaf4fc;color:var(--accent);">初始资金 ¥50,000</span></h2>
       <div id="research-warning" class="research-warning" style="display:none;"></div>
       <form id="live-form" onsubmit="submitRecord(event)">
         <div class="form-grid">
@@ -167,11 +168,11 @@
         </div>
         <input type="hidden" id="f-signal-target">
         <div id="preview-line" class="signal-meta" style="margin-top:10px;">
-          预览：持仓市值 = — × — = —；实盘仓位 = —
+          预览：持仓市值 = — × — = —；手工仓位 = —
         </div>
         <div class="form-actions">
-          <button type="button" class="btn btn-secondary" onclick="fillFromSignal()">按信号自动填充</button>
-          <button type="submit" class="btn btn-primary">提交记录</button>
+          <button type="button" class="btn btn-secondary" onclick="fillFromSignal()">按信号填充快照</button>
+          <button type="submit" class="btn btn-primary" id="submit-record-btn">保存快照</button>
         </div>
       </form>
     </div>
@@ -179,13 +180,13 @@
 
   <!-- 历史记录表 -->
   <div class="card">
-    <h2>历史录入记录</h2>
+    <h2>历史持仓快照</h2>
     <div id="records-content" class="table-wrap"><div class="empty">加载中…</div></div>
   </div>
 
   <!-- 对账图 -->
   <div class="card">
-    <h2>策略 NAV vs 实盘 NAV 对账</h2>
+    <h2>策略 NAV vs 手工记录 NAV 对账</h2>
     <div id="recon-summary" class="recon-summary"></div>
     <div id="reconcile-chart"></div>
     <div id="recon-msg" class="empty" style="display:none;"></div>
@@ -209,6 +210,9 @@ let currentStrategy = 'star50_timing';
 let currentSignal = null;
 let currentMeta = { initial_capital: 50000, currency: 'CNY', lot_size: 100 };
 let reconChart = null;
+let refreshGeneration = 0;
+let submitRecordPending = false;
+const pendingDeleteRecords = new Set();
 
 function currencySymbol() { return currentMeta.currency === 'USD' ? '$' : '¥'; }
 function fmtMoney(v) { return currencySymbol() + Number(v).toLocaleString('en-US', { maximumFractionDigits: 2 }); }
@@ -260,10 +264,11 @@ function signalUrl(sid) {
   return `/api/timing/latest_signal?strategy=${sid}`;
 }
 
-async function loadSignal() {
-  const url = signalUrl(currentStrategy);
+async function loadSignal(generation = refreshGeneration, strategy = currentStrategy) {
+  const url = signalUrl(strategy);
   const res = await fetch(url);
   const data = await res.json();
+  if (generation !== refreshGeneration) return;
   currentSignal = data;
   renderSignal(data);
 }
@@ -289,6 +294,7 @@ function renderMetaPanel(meta) {
   const t6 = meta.training_recent_6m || {};
   const tF = meta.training_full_pre_cutoff || {};
   const h = meta.holdout_metrics || {};
+  const hasHoldout = Object.keys(h).length > 0;
   // total_return 在新版 walk_forward 才会落盘；老 JSON 只有 final_nav，需要兜底推导
   const retOf = (m) => (m && m.total_return != null) ? m.total_return
     : (m && m.final_nav != null) ? (m.final_nav - 1.0) : null;
@@ -314,12 +320,12 @@ function renderMetaPanel(meta) {
           <td class="meta-lbl">训练区 全历史</td>
           <td class="meta-val">累计 ${colorPct(tFRet)}，maxDD ${colorDd(tFDd)}</td>
         </tr>
-        <tr class="meta-holdout">
-          <td class="meta-lbl">Holdout（OOS 真实表现）</td>
+        ${hasHoldout ? `<tr class="meta-holdout">
+          <td class="meta-lbl">Holdout（OOS）</td>
           <td class="meta-val">累计 ${colorPct(hRet, {emphasize:true})}，maxDD ${colorDd(hDd, {emphasize:true})}</td>
           <td class="meta-lbl">Holdout 年化</td>
           <td class="meta-val">${colorPct(hAnn, {emphasize:true})}</td>
-        </tr>
+        </tr>` : `<tr class="meta-holdout"><td class="meta-lbl">Holdout（OOS）</td><td class="meta-val" colspan="3">当前缓存响应未提供 OOS 指标</td></tr>`}
       </table>
     </div>
   `;
@@ -335,10 +341,10 @@ function renderResearchWarning(s) {
   const h = (s.experiment_meta && s.experiment_meta.holdout_metrics) || null;
   const annHtml = h && h.annual_return != null
     ? colorPct(h.annual_return, {emphasize:true})
-    : '<span class="num-muted">未知</span>';
+    : '<span class="num-muted">当前缓存响应未提供</span>';
   const ddHtml = h && h.max_drawdown != null
     ? colorDd(h.max_drawdown, {emphasize:true})
-    : '<span class="num-muted">未知</span>';
+    : '<span class="num-muted">当前缓存响应未提供</span>';
   box.style.display = 'block';
   box.innerHTML =
     `<strong>⚠ 当前策略状态：研究中（未通过「择时最低门槛」）</strong><br/>` +
@@ -346,7 +352,7 @@ function renderResearchWarning(s) {
     `策略的<strong>累计收益</strong>与<strong>最大回撤</strong>都不能输给被择时的 ETF 本身；` +
     `任意一项不达标即视为研究中（项目内部代号 Rule 14）。</span><br/>` +
     `最近 holdout（OOS）表现：年化 ${annHtml}，maxDD ${ddHtml}。` +
-    `建议先用小资金试运行，待验证窗口达标后再放大头寸；提交录入时会再次确认。`;
+    `建议先用小资金试运行，待验证窗口达标后再放大头寸；保存手工快照时会再次确认。`;
 }
 
 function renderSignal(s) {
@@ -356,11 +362,13 @@ function renderSignal(s) {
     + '（项目内部代号：Rule 14）';
   if (s.status === 'production') {
     badge.className = 'badge badge-prod';
-    badge.textContent = '✓ 已通过择时门槛';
+    badge.textContent = '配置状态：production';
+    badge.setAttribute('aria-label', '配置状态 production；不是浏览器实时复核');
     badge.title = ruleTip;
   } else {
     badge.className = 'badge badge-research';
-    badge.textContent = '⚠ 研究中（未通过门槛）';
+    badge.textContent = '配置状态：research';
+    badge.setAttribute('aria-label', '配置状态 research；来自当前缓存');
     badge.title = ruleTip;
   }
   renderResearchWarning(s);
@@ -383,7 +391,7 @@ function renderSignal(s) {
   const html = `
     <div class="signal-grid">
       <div class="signal-cell"><div class="lbl">信号日 (T)</div><div class="val">${s.as_of_date}</div></div>
-      <div class="signal-cell"><div class="lbl">实盘当前仓位</div><div class="val">${(livePos * 100).toFixed(1)}%</div></div>
+      <div class="signal-cell"><div class="lbl">当前手工仓位</div><div class="val">${(livePos * 100).toFixed(1)}%</div></div>
       <div class="signal-cell"><div class="lbl">T+1 目标仓位</div><div class="val">${(s.target_exposure * 100).toFixed(1)}%</div></div>
       <div class="signal-cell"><div class="lbl">操作建议</div><div class="val ${deltaColor}">${liveLabel}</div></div>
       <div class="signal-cell" style="grid-column:span 2">
@@ -417,7 +425,7 @@ function recalcPreview() {
   const shares = parseFloat($('f-shares').value);
   const capital = parseFloat($('f-capital').value) || currentMeta.initial_capital;
   if (!(price > 0) || !(shares >= 0) || !(capital > 0)) {
-    $('preview-line').innerHTML = '预览：持仓市值 = — × — = —；实盘仓位 = —';
+    $('preview-line').innerHTML = '预览：持仓市值 = — × — = —；手工仓位 = —';
     return;
   }
   const holding = price * shares;
@@ -427,7 +435,7 @@ function recalcPreview() {
   const over = pos > 1.0 ? ` <span style="color:var(--red);">⚠ 超过 100%，将按 100% 入账</span>` : '';
   $('preview-line').innerHTML =
     `预览：持仓市值 = ${fmtMoney(price)} × ${shares} = <strong>${fmtMoney(holding)}</strong>；` +
-    `资金 ${fmtMoney(cap)}；实盘仓位 = <strong>${posPct}</strong>${over}`;
+    `资金 ${fmtMoney(cap)}；手工仓位 = <strong>${posPct}</strong>${over}`;
 }
 
 function fillFromSignal() {
@@ -451,13 +459,14 @@ function fillFromSignal() {
   }
   $('f-shares').value = shares;
   const label = currentSignal.live_rebalance_label || currentSignal.rebalance_label;
-  $('f-notes').value = `按 ${currentSignal.as_of_date} 信号录入：${label}（目标 ${(target*100).toFixed(1)}%）`;
+  $('f-notes').value = `按 ${currentSignal.as_of_date} 缓存信号保存快照：${label}（目标 ${(target*100).toFixed(1)}%）`;
   recalcPreview();
   toast('已按最新信号填充', 'success');
 }
 
 async function submitRecord(e) {
   e.preventDefault();
+  if (submitRecordPending) return;
   if (currentSignal && currentSignal.status === 'research') {
     const hold = currentSignal.experiment_meta && currentSignal.experiment_meta.holdout_metrics;
     const ann = hold && hold.annual_return != null
@@ -472,9 +481,12 @@ async function submitRecord(e) {
       `门槛要求：在近 1 个月 / 近 1 季度 / 近半年三个验证窗口里，\n` +
       `累计收益与最大回撤都必须不输给被择时的 ETF 本身（项目内部代号 Rule 14）。\n\n` +
       `该策略 Holdout（OOS）表现：年化 ${ann}，maxDD ${dd}。\n\n` +
-      `确认要按此策略录入实盘下单吗？`;
+      `确认要按此策略保存手工持仓快照吗？`;
     if (!confirm(ruleLine)) return;
   }
+  submitRecordPending = true;
+  const submitButton = $('submit-record-btn');
+  if (submitButton) submitButton.disabled = true;
   const body = {
     date: $('f-date').value,
     strategy: currentStrategy,
@@ -484,35 +496,41 @@ async function submitRecord(e) {
     capital: parseFloat($('f-capital').value) || currentMeta.initial_capital,
     notes: $('f-notes').value,
   };
-  const res = await fetch('/api/live/record', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json();
-  if (res.ok) {
-    const pct = (parseFloat(data.record.actual_position) * 100).toFixed(2);
-    toast(`录入成功，实盘仓位 = ${pct}%`, 'success');
-    $('live-form').reset();
-    $('f-capital').value = currentMeta.initial_capital;
-    delete $('f-capital').dataset.userTouched;
-    recalcPreview();
-    loadRecords();
-    loadReconcile();
-  } else {
-    toast('录入失败: ' + (data.error || res.status), 'error');
+  try {
+    const res = await fetch('/api/live/record', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      const pct = (parseFloat(data.record.actual_position) * 100).toFixed(2);
+      toast(`快照保存成功，手工仓位 = ${pct}%`, 'success');
+      $('live-form').reset();
+      $('f-capital').value = currentMeta.initial_capital;
+      delete $('f-capital').dataset.userTouched;
+      recalcPreview();
+      loadRecords();
+      loadReconcile();
+    } else {
+      toast('快照保存失败: ' + (data.error || res.status), 'error');
+    }
+  } finally {
+    submitRecordPending = false;
+    if (submitButton) submitButton.disabled = false;
   }
 }
 
-async function loadRecords() {
-  const res = await fetch(`/api/live/records?strategy=${currentStrategy}`);
+async function loadRecords(generation = refreshGeneration, strategy = currentStrategy) {
+  const res = await fetch(`/api/live/records?strategy=${strategy}`);
   const data = await res.json();
+  if (generation !== refreshGeneration) return;
   const rows = data.records || [];
   if (rows.length === 0) {
-    $('records-content').innerHTML = '<div class="empty"><strong>默认空仓状态</strong><br/>当前策略尚无任何实盘历史记录，从空仓开始（actual_position = 0，NAV = 1.0）。<br/>录入第一笔实盘交易后，本表与下方对账图将从该日期延续。</div>';
+    $('records-content').innerHTML = '<div class="empty"><strong>默认空仓状态</strong><br/>当前策略尚无手工持仓快照，从空仓开始（actual_position = 0，NAV = 1.0）。<br/>保存第一条快照后，本表与下方对账图将从该日期延续。</div>';
     return;
   }
-  let html = '<table><thead><tr><th>日期</th><th>信号目标</th><th>成交价</th><th>持有股数</th><th>持仓市值</th><th>资金</th><th>实盘仓位</th><th>备注</th><th>创建时间</th><th></th></tr></thead><tbody>';
+  let html = '<table><thead><tr><th>日期</th><th>信号目标</th><th>参考成交价</th><th>持有股数</th><th>持仓市值</th><th>资金</th><th>手工仓位</th><th>备注</th><th>创建时间</th><th></th></tr></thead><tbody>';
   for (const r of rows) {
     const price = parseFloat(r.exec_price);
     const shares = parseFloat(r.shares);
@@ -528,7 +546,7 @@ async function loadRecords() {
       <td class="num"><strong>${(parseFloat(r.actual_position) * 100).toFixed(2)}%</strong></td>
       <td>${r.notes || ''}</td>
       <td>${r.created_at}</td>
-      <td><button class="btn btn-danger" onclick="deleteRecord(${r.record_id})">删除</button></td>
+      <td><button class="btn btn-danger" data-record-id="${r.record_id}" onclick="deleteRecord(${r.record_id})">删除</button></td>
     </tr>`;
   }
   html += '</tbody></table>';
@@ -536,20 +554,30 @@ async function loadRecords() {
 }
 
 async function deleteRecord(id) {
+  if (pendingDeleteRecords.has(id)) return;
   if (!confirm(`确认删除 record_id=${id}？`)) return;
-  const res = await fetch(`/api/live/record/${id}`, { method: 'DELETE' });
-  if (res.ok) {
-    toast('删除成功');
-    loadRecords();
-    loadReconcile();
-  } else {
-    toast('删除失败', 'error');
+  pendingDeleteRecords.add(id);
+  const button = document.querySelector(`[data-record-id="${id}"]`);
+  if (button) button.disabled = true;
+  try {
+    const res = await fetch(`/api/live/record/${id}`, { method: 'DELETE' });
+    if (res.ok) {
+      toast('删除成功');
+      loadRecords();
+      loadReconcile();
+    } else {
+      toast('删除失败', 'error');
+    }
+  } finally {
+    pendingDeleteRecords.delete(id);
+    if (button && button.isConnected) button.disabled = false;
   }
 }
 
-async function loadReconcile() {
-  const res = await fetch(`/api/live/reconcile?strategy=${currentStrategy}`);
+async function loadReconcile(generation = refreshGeneration, strategy = currentStrategy) {
+  const res = await fetch(`/api/live/reconcile?strategy=${strategy}`);
   const data = await res.json();
+  if (generation !== refreshGeneration) return;
   // 把策略 meta（初始资金 / 币种 / lot）同步到表单标签
   if (data.initial_capital) {
     currentMeta = {
@@ -577,12 +605,12 @@ async function loadReconcile() {
   if (data.empty_state) {
     $('recon-summary').innerHTML = `
       <div class="recon-pill">状态：<span class="v" style="color:var(--amber)">默认空仓</span></div>
-      <div class="recon-pill">实盘 NAV：<span class="v">${(data.initial_nav || 1.0).toFixed(4)}</span></div>
+      <div class="recon-pill">手工记录 NAV：<span class="v">${(data.initial_nav || 1.0).toFixed(4)}</span></div>
       <div class="recon-pill">当前持仓：<span class="v">${((data.initial_position || 0) * 100).toFixed(1)}%</span></div>
     `;
     $('reconcile-chart').innerHTML = '';
     $('recon-msg').style.display = 'block';
-    $('recon-msg').innerHTML = '<strong>默认空仓起点</strong>：实盘 NAV = 1.0，actual_position = 0。录入第一笔实盘交易后，对账图将从该日期开始延续。';
+    $('recon-msg').innerHTML = '<strong>默认空仓起点</strong>：手工记录 NAV = 1.0，actual_position = 0。保存第一条快照后，对账图将从该日期开始延续。';
     if (reconChart) { reconChart.dispose(); reconChart = null; }
     return;
   }
@@ -590,7 +618,7 @@ async function loadReconcile() {
     $('recon-summary').innerHTML = '';
     $('reconcile-chart').innerHTML = '';
     $('recon-msg').style.display = 'block';
-    $('recon-msg').textContent = data.message || data.error || '尚无对账数据（先录入至少一条实盘记录）';
+    $('recon-msg').textContent = data.message || data.error || '尚无对账数据（先保存至少一条手工持仓快照）';
     if (reconChart) { reconChart.dispose(); reconChart = null; }
     return;
   }
@@ -601,16 +629,16 @@ async function loadReconcile() {
   const diffColor = (finalLive - finalStrat) >= 0 ? 'var(--green)' : 'var(--red)';
   $('recon-summary').innerHTML = `
     <div class="recon-pill">起点：<span class="v">${data.start_date}</span></div>
-    <div class="recon-pill">实盘记录数：<span class="v">${data.live_records}</span></div>
+    <div class="recon-pill">手工快照数：<span class="v">${data.live_records}</span></div>
     <div class="recon-pill">策略 NAV：<span class="v">${finalStrat}</span></div>
-    <div class="recon-pill">实盘 NAV：<span class="v">${finalLive}</span></div>
+    <div class="recon-pill">手工记录 NAV：<span class="v">${finalLive}</span></div>
     <div class="recon-pill">差异：<span class="v" style="color:${diffColor}">${diff > 0 ? '+' : ''}${diff}%</span></div>
   `;
   const series = data.series;
   if (!reconChart) reconChart = echarts.init($('reconcile-chart'));
   reconChart.setOption({
     tooltip: { trigger: 'axis' },
-    legend: { data: ['策略 NAV', '实盘 NAV', '仓位'], bottom: 0 },
+    legend: { data: ['策略 NAV', '手工记录 NAV', '仓位'], bottom: 0 },
     grid: { left: 50, right: 50, top: 30, bottom: 50 },
     xAxis: { type: 'category', data: series.map(r => r.date) },
     yAxis: [
@@ -619,7 +647,7 @@ async function loadReconcile() {
     ],
     series: [
       { name: '策略 NAV', type: 'line', smooth: true, data: series.map(r => r.strategy_nav), color: '#0984e3' },
-      { name: '实盘 NAV', type: 'line', smooth: true, data: series.map(r => r.live_nav), color: '#00b894' },
+      { name: '手工记录 NAV', type: 'line', smooth: true, data: series.map(r => r.live_nav), color: '#00b894' },
       { name: '仓位', type: 'line', yAxisIndex: 1, step: 'end', data: series.map(r => r.actual_position), color: '#f39c12', areaStyle: { opacity: 0.15 } },
     ],
   });
@@ -627,18 +655,19 @@ async function loadReconcile() {
 
 let allSignals = {};
 
-async function loadAllSignals() {
+async function loadAllSignals(generation = refreshGeneration) {
   const grid = $('signal-dash-grid');
   grid.innerHTML = '<div class="empty" style="grid-column:1/-1;">加载中…</div>';
   const promises = ALL_STRATEGIES.map(async s => {
     try {
       const res = await fetch(signalUrl(s.id));
       const data = await res.json();
-      allSignals[s.id] = data;
-      return data;
-    } catch(e) { return null; }
+      return [s.id, data];
+    } catch(e) { return [s.id, null]; }
   });
-  await Promise.all(promises);
+  const results = await Promise.all(promises);
+  if (generation !== refreshGeneration) return;
+  allSignals = Object.fromEntries(results);
   renderDashboard();
 }
 
@@ -692,15 +721,16 @@ async function updateIndexData() {
 }
 
 function refreshAll() {
-  loadAllSignals();
-  loadSignal();
-  loadRecords();
-  loadReconcile();
+  const generation = ++refreshGeneration;
+  const strategy = currentStrategy;
+  loadAllSignals(generation);
+  loadSignal(generation, strategy);
+  loadRecords(generation, strategy);
+  loadReconcile(generation, strategy);
 }
 
 initStrategySelect();
 $('f-capital').addEventListener('change', () => { $('f-capital').dataset.userTouched = '1'; });
 refreshAll();
 </script>
-</body>
-</html>
+{% endblock %}

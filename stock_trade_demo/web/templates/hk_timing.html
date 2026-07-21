@@ -1,9 +1,7 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>港股择时策略</title>
+{% extends "base.html" %}
+{% set page_key = "hk-timing" %}
+{% block title %}港股指数择时研究{% endblock %}
+{% block page_head %}
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
   <script>window.echarts||document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/echarts/5.5.0/echarts.min.js"><\/script>');</script>
   <style>
@@ -116,25 +114,27 @@
     .changelog-summary { font-size: 13px; color: var(--text); line-height: 1.7; margin-bottom: 10px; }
     .changelog-list { margin-left: 18px; color: var(--muted); font-size: 12px; line-height: 1.7; }
   </style>
-</head>
-<body>
+{% endblock %}
+{% block content %}
 <div class="app">
 
-  <div class="header">
-    <div>
-      <h1>港股择时策略 · 恒生指数/恒生科技买卖时机分析</h1>
+  <section class="qr-page-intro" aria-labelledby="page-title">
+    <div class="qr-page-intro__copy">
+      <p class="qr-eyebrow">港股 · 跨境 ETF 择时</p>
+      <h1 id="page-title">港股指数择时研究</h1>
       <div class="subtitle">恒生ETF(159920) · 恒生科技ETF(513180) · 趋势+突破+MACD择时 · QDII T+0 交收</div>
+      <div class="qr-context-line" aria-label="当前研究上下文">
+        <span class="qr-context-chip qr-context-chip--cache">既有缓存结果</span>
+        <span class="qr-context-chip">近期切片：1m / 1q / 6m</span>
+        <span id="data-date-badge" class="qr-context-chip">数据更新至: —</span>
+      </div>
     </div>
-    <div style="display:flex;gap:8px;align-items:center;">
-      <a href="/" class="btn btn-secondary" style="text-decoration:none;">选股策略</a>
-      <a href="/timing" class="btn btn-secondary" style="text-decoration:none;">A股择时</a>
-      <a href="/us_timing" class="btn btn-secondary" style="text-decoration:none;">美股择时</a>
-      <a href="/hk_timing" class="btn btn-secondary" style="text-decoration:none;background:var(--accent);color:#fff;">港股择时</a>
-      <a href="/commodity" class="btn btn-secondary" style="text-decoration:none;">大宗商品</a>
-      <a href="/live" class="btn btn-secondary" style="text-decoration:none;">实盘记录</a>
-      <span id="data-date-badge" style="font-size:12px;color:var(--muted);">数据更新至: —</span>
+    <div class="qr-page-intro__actions">
+      <button class="btn btn-primary" onclick="runAllBacktests()">查看缓存结果</button>
     </div>
-  </div>
+  </section>
+
+  <p class="qr-reading-note"><strong>阅读顺序：</strong>最大回撤与 Calmar → 收益与曲线 → 当前信号和仓位 → 真实缓存交易字段 → 公式与参数。参数只查询已有缓存。</p>
 
   <div id="error-banner" class="error-banner hidden"></div>
 
@@ -165,7 +165,7 @@
     <input type="date" id="start-date" class="date-input" onchange="clearPeriodActive()" />
     <label style="font-size:12px;color:var(--muted);">结束</label>
     <input type="date" id="end-date" class="date-input" onchange="clearPeriodActive()" />
-    <button class="btn btn-primary" onclick="runAllBacktests()">运行回测</button>
+    <button class="btn btn-primary" onclick="runAllBacktests()">查看缓存结果</button>
   </div>
 
   <div class="indices-grid" id="indices-grid"></div>
@@ -195,6 +195,7 @@
 
   let strategyList = [];
   let allData = {};
+  let backtestGeneration = 0;
   let paramConfigsByStrategy = {};
   let timingInfo = null;
   let _loadingTimer = null;
@@ -284,7 +285,7 @@
     timingInfo = await resp.json();
     if (timingInfo.error) throw new Error(timingInfo.error);
     document.getElementById('data-date-badge').textContent = `数据: ${timingInfo.data_min_date} ~ ${timingInfo.data_max_date}`;
-    document.querySelector('.subtitle').innerHTML =
+    document.querySelector('.subtitle').textContent =
       `恒生ETF(159920) · 恒生科技ETF(513180) · ${timingInfo.data_min_date} ~ ${timingInfo.data_max_date} · 趋势+突破+MACD · QDII T+0`;
   }
 
@@ -302,25 +303,32 @@
     const resp = await fetch('/api/hk_timing/backtest?' + params.toString());
     const data = await resp.json();
     if (data.error) throw new Error(data.error);
-    allData[sid] = data;
+    return data;
   }
 
   async function runAllBacktests() {
+    const generation = ++backtestGeneration;
     showLoading('正在加载回测...', 30);
     try {
       const start = document.getElementById('start-date').value || undefined;
       const end = document.getElementById('end-date').value || undefined;
+      const nextData = {};
       for (const s of strategyList) {
         showLoading(`加载 ${s.name}...`, 50);
-        await fetchBacktest(s.id, start, end);
+        nextData[s.id] = await fetchBacktest(s.id, start, end);
       }
+      if (generation !== backtestGeneration) return;
+      Object.assign(allData, nextData);
       showLoading('正在渲染...', 85);
       renderAll();
       hideLoading();
     } catch(e) {
+      if (generation !== backtestGeneration) return;
       hideLoading();
       document.getElementById('error-banner').classList.remove('hidden');
-      document.getElementById('error-banner').textContent = '加载失败: ' + e.message;
+      document.getElementById('error-banner').textContent = /cache_miss|缓存缺失|没有对应缓存|未就绪/i.test(e.message || '')
+        ? '当前配置没有对应缓存；浏览器不会在线重算。'
+        : '加载失败: ' + e.message;
     }
   }
 
@@ -334,7 +342,7 @@
     const params = meta.parameters || [];
     const shared = meta.shared_parameters || [];
 
-    const trades = data.trades || [];
+    const trades = data.trade_details || [];
     const filterTrades = trades.filter(t => t.action === 'buy' || t.action === 'sell');
 
     return `
@@ -348,24 +356,16 @@
         </div>
       </div>
 
-      <div class="signal-bar">
-        <div class="signal-main">
-          <span class="signal-label">当前信号</span>
-          <span class="signal-badge ${badgeCls}">${badgeText}</span>
-        </div>
-        <div class="signal-actions">
-          <span class="signal-label">目标仓位 ${expPct}</span>
-        </div>
-      </div>
-
       <div class="metrics-strip">
-        <div class="metric-cell"><div class="lbl">累积净值</div><div class="val ${valClass(parseMetricVal(m.cumulative_return)-1)}">${formatNumVal(m.cumulative_return, 4)}</div></div>
-        <div class="metric-cell"><div class="lbl">年化收益</div><div class="val ${valClass(parseMetricVal(m.annual_return))}">${m.annual_return || '—'}</div></div>
         <div class="metric-cell"><div class="lbl">最大回撤</div><div class="val val-neg">${m.max_drawdown || '—'}</div></div>
         <div class="metric-cell"><div class="lbl">Calmar比率</div><div class="val ${valClass(parseMetricVal(m.calmar_ratio))}">${formatNumVal(m.calmar_ratio)}</div></div>
+        <div class="metric-cell"><div class="lbl">年化收益</div><div class="val ${valClass(parseMetricVal(m.annual_return))}">${m.annual_return || '—'}</div></div>
         <div class="metric-cell"><div class="lbl">累计收益</div><div class="val ${valClass(parseMetricVal(m.total_return_pct))}">${m.total_return_pct || '—'}</div></div>
+        <div class="metric-cell"><div class="lbl">累积净值</div><div class="val ${valClass(parseMetricVal(m.cumulative_return)-1)}">${formatNumVal(m.cumulative_return, 4)}</div></div>
         <div class="metric-cell"><div class="lbl">信号日期</div><div class="val" style="font-size:12px;">${sig.as_of_date || '—'}</div></div>
       </div>
+
+      <div class="card-footer">固定 OOS：${data.holdout_metrics || data.oos_metrics ? '当前缓存响应已提供，请结合对应指标阅读' : '当前缓存响应未提供 OOS 指标'}</div>
 
       <div class="position-strip">
         <div class="position-item"><div class="lbl">ETF代码</div><div class="val" style="font-size:13px;">${sig.etf_code || '—'} ${sig.etf_name || ''}</div></div>
@@ -375,6 +375,17 @@
       </div>
 
       <div class="chart-col-wrap"><div class="col-chart-inner" id="chart-${sid}"></div></div>
+      <p class="qr-chart-summary" style="padding:0 14px 12px;">策略净值曲线使用当前缓存点位；训练截止标记只说明时间边界，不代表浏览器完成 OOS 认证。</p>
+
+      <div class="signal-bar">
+        <div class="signal-main">
+          <span class="signal-label">当前缓存信号</span>
+          <span class="signal-badge ${badgeCls}">${badgeText}</span>
+        </div>
+        <div class="signal-actions">
+          <span class="signal-label">目标仓位 ${expPct}</span>
+        </div>
+      </div>
 
       <div class="card-footer">
         <strong>当前信号原因：</strong>${sig.current_reason || sig.reason_summary || '—'}
@@ -393,7 +404,7 @@
       </div>
 
       <div class="param-section">
-        <div class="param-header"><div class="param-title">⚙ 策略参数</div></div>
+        <div class="param-header"><div class="param-title">查询已有缓存的策略参数</div></div>
         <div class="factor-grid">
           ${[...params, ...shared].map(p => {
             const val = p.default != null ? p.default : '';
@@ -409,7 +420,7 @@
           }).join('')}
         </div>
         <div style="margin-top:12px;text-align:right;">
-          <button class="btn btn-primary" onclick="applyParams('${sid}')">应用并重跑</button>
+          <button class="btn btn-primary" onclick="applyParams('${sid}')">查询对应缓存结果</button>
         </div>
       </div>
     </div>`;
@@ -472,39 +483,40 @@
     const data = allData[sid];
     const tbody = document.getElementById('trade-history-body');
     const etfCode = (data?.current_signal?.etf_code) || '—';
-    if (!data || !data.trades) {
+    if (!data || !data.trade_details) {
       tbody.innerHTML = '<tr><td colspan="11" style="color:var(--muted);text-align:center;">暂无交易数据</td></tr>';
       return;
     }
-    const trades = data.trades.filter(t => t.action === 'buy' || t.action === 'sell');
+    const trades = data.trade_details.filter(t => t.action === 'buy' || t.action === 'sell');
     if (!trades.length) {
       tbody.innerHTML = '<tr><td colspan="11" style="color:var(--muted);text-align:center;">暂无交易记录</td></tr>';
       return;
     }
-    tbody.innerHTML = trades.map((t, i) => {
+    tbody.innerHTML = trades.map((t) => {
       const action = t.action === 'buy' ? '买入' : '卖出';
       const cls = t.action === 'buy' ? 'action-buy' : 'action-sell';
-      const prevClose = i > 0 ? trades[i-1].close : null;
-      const pnl = prevClose && t.action === 'sell' ? ((t.close - prevClose) / prevClose * 100) : null;
+      const pnl = t.realized_pnl;
+      const pnlPct = t.realized_pnl_pct;
       return `
       <tr>
         <td>${t.date || '—'}</td>
         <td class="${cls}">${action}</td>
-        <td>${etfCode}</td>
-        <td>${t.close != null ? Number(t.close).toFixed(3) : '—'}</td>
-        <td>—</td>
-        <td>—</td>
-        <td>—</td>
-        <td>—</td>
-        <td style="color:${(pnl||0)>=0?'var(--red)':'var(--green)'};font-weight:700;">${pnl != null ? (pnl>=0?'+':'')+pnl.toFixed(2)+'%' : '—'}</td>
-        <td style="color:${(pnl||0)>=0?'var(--red)':'var(--green)'};">${pnl != null ? (pnl>=0?'+':'')+pnl.toFixed(2)+'%' : '—'}</td>
-        <td>${t.strength_score != null ? Number(t.strength_score).toFixed(4) : '—'}</td>
+        <td>${t.etf_code || etfCode}</td>
+        <td>${t.trade_price != null ? Number(t.trade_price).toFixed(3) : '—'}</td>
+        <td>${t.quantity != null ? Number(t.quantity).toLocaleString('zh-CN') : '—'}</td>
+        <td>${formatCurrencyVal(t.trade_amount)}</td>
+        <td>${formatCurrencyVal(t.fee_amount)}</td>
+        <td>${formatCurrencyVal(t.holding_value)}</td>
+        <td class="${valClass(pnl)}">${pnl != null ? formatCurrencyVal(pnl) : '—'}</td>
+        <td class="${valClass(pnlPct)}">${pnlPct != null ? formatPctVal(pnlPct) : '—'}</td>
+        <td>${t.nav != null ? Number(t.nav).toFixed(4) : '—'}</td>
       </tr>`;
     }).join('');
   }
 
   async function applyParams(sid) {
-    showLoading('重新计算...', 50);
+    const generation = ++backtestGeneration;
+    showLoading('正在查询对应缓存...', 50);
     try {
       const inputs = document.querySelectorAll(`input[data-strategy="${sid}"]`);
       const extraParams = {};
@@ -517,12 +529,17 @@
       const resp = await fetch('/api/hk_timing/backtest?' + params.toString());
       const data = await resp.json();
       if (data.error) throw new Error(data.error);
+      if (generation !== backtestGeneration) return;
       allData[sid] = data;
       renderAll();
       hideLoading();
     } catch(e) {
+      if (generation !== backtestGeneration) return;
       hideLoading();
-      alert('重跑失败: ' + e.message);
+      const detail = /cache_miss|缓存缺失|没有对应缓存|未就绪/i.test(e.message || '')
+        ? '当前配置没有对应缓存；浏览器不会在线重算。'
+        : e.message;
+      alert('缓存查询失败: ' + detail);
     }
   }
 
@@ -560,5 +577,4 @@
   document.addEventListener('DOMContentLoaded', init);
   window.addEventListener('resize', () => Object.values(charts).forEach(c => c.resize()));
 </script>
-</body>
-</html>
+{% endblock %}

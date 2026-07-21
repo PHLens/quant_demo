@@ -1,9 +1,7 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>大宗商品择时 · Gold Timing</title>
+{% extends "base.html" %}
+{% set page_key = "commodity" %}
+{% block title %}大宗商品择时研究{% endblock %}
+{% block page_head %}
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
 <script src="/static/js/data_update_flow.js"></script>
 <style>
@@ -90,21 +88,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 @keyframes spin { to{transform:rotate(360deg);} }
 #loading-status { margin-top:12px; font-size:14px; color:var(--text-secondary); }
 </style>
-</head>
-<body>
-
-<!-- Nav Bar -->
-<div class="nav-bar">
-  <a href="/">选股</a>
-  <a href="/timing">A股择时</a>
-  <a href="/us_timing">美股择时</a>
-  <a href="/hk_timing">港股择时</a>
-  <a href="/commodity" class="active">大宗商品</a>
-  <a href="/live">实盘</a>
-  <span style="flex:1;"></span>
-  <button class="btn btn-secondary" onclick="updateIndexData()" id="btn-update-index" style="font-size:12px;padding:4px 12px;">↻ 刷新数据</button>
-  <span id="index-update-msg" style="font-size:11px;color:var(--text-secondary);"></span>
-</div>
+{% endblock %}
+{% block content %}
 
 <div id="loading" class="hidden">
   <div class="spinner"></div>
@@ -112,8 +97,23 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 </div>
 
 <div class="container">
-  <div class="page-title">大宗商品择时</div>
-  <div class="page-subtitle">黄金ETF (518880) · 基于趋势+突破+MACD的择时信号 · 与股票低相关</div>
+  <section class="qr-page-intro" aria-labelledby="page-title">
+    <div class="qr-page-intro__copy">
+      <p class="qr-eyebrow">大宗商品 · 黄金 ETF</p>
+      <h1 id="page-title" class="page-title">大宗商品择时研究</h1>
+      <div class="page-subtitle">黄金ETF (518880) · 基于趋势+突破+MACD的择时信号 · 与股票低相关</div>
+      <div class="qr-context-line" aria-label="当前研究上下文">
+        <span class="qr-context-chip qr-context-chip--cache">既有缓存结果</span>
+        <span id="data-date-badge" class="qr-context-chip">数据更新至: —</span>
+        <span id="index-update-msg" class="qr-context-chip"></span>
+      </div>
+    </div>
+    <div class="qr-page-intro__actions">
+      <button class="btn btn-secondary" onclick="updateIndexData()" id="btn-update-index">↻ 更新指数/ETF数据</button>
+    </div>
+  </section>
+
+  <p class="qr-reading-note"><strong>阅读顺序：</strong>最大回撤与 Calmar → 年化与累计净值 → 当前缓存信号 → 净值曲线 → 公式与参数。参数只查询已有缓存。</p>
 
   <div id="error-banner" style="display:none;background:#553333;color:#ff6b6b;padding:12px;border-radius:8px;margin-bottom:16px;"></div>
 
@@ -125,6 +125,7 @@ const CHARTS = {};
 let allData = {};
 let currentStrategy = 'gold_timing';
 let strategyMeta = {};
+let backtestGeneration = 0;
 
 function showLoading(msg) {
   document.getElementById('loading').classList.remove('hidden');
@@ -140,13 +141,17 @@ async function init() {
     if (info.error) throw new Error(info.error);
     document.querySelector('.page-subtitle').textContent =
       `黄金ETF (518880) · ${info.data_min_date} ~ ${info.data_max_date} · 趋势+突破+MACD`;
+    document.getElementById('data-date-badge').textContent = `数据: ${info.data_min_date} ~ ${info.data_max_date}`;
 
     const slResp = await fetch('/api/commodity/strategy_list');
     strategyMeta = await slResp.json();
     if (!Array.isArray(strategyMeta)) throw new Error('策略列表格式异常');
 
     currentStrategy = strategyMeta[0]?.id || 'gold_timing';
-    await loadBacktest(currentStrategy);
+    const generation = ++backtestGeneration;
+    const data = await loadBacktest(currentStrategy);
+    if (generation !== backtestGeneration) return;
+    allData[currentStrategy] = data;
     renderCards();
     hideLoading();
   } catch(e) {
@@ -163,7 +168,7 @@ async function loadBacktest(sid) {
     const resp = await fetch('/api/commodity/backtest?' + qs.toString());
     const data = await resp.json();
     if (data.error) throw new Error(data.error);
-    allData[sid] = data;
+    return data;
   } finally { hideLoading(); }
 }
 
@@ -185,19 +190,28 @@ function renderCards() {
 }
 
 function formatPct(v) {
-  if (v == null || isNaN(v)) return '—';
-  return (v >= 0 ? '+' : '') + (v * 100).toFixed(2) + '%';
+  if (v == null || v === '') return '—';
+  if (typeof v === 'string' && v.trim().endsWith('%')) {
+    const n = Number(v.trim().slice(0, -1));
+    return Number.isFinite(n) ? `${n > 0 ? '+' : ''}${n.toFixed(2)}%` : '—';
+  }
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '—';
+  return (n >= 0 ? '+' : '') + (n * 100).toFixed(2) + '%';
 }
 function formatNum(v, d) { return v != null && isFinite(v) ? v.toFixed(d || 2) : '—'; }
 
 function buildCard(meta, data) {
   const m = data.metrics || {};
   const sig = data.current_signal || {};
-  const posLabel = sig.current_action === 'buy' ? '看多' : sig.current_action === 'sell' ? '看空' : '持有';
+  const posLabel = sig.current_action === 'buy' ? '看多'
+    : sig.current_action === 'sell' ? '看空'
+    : sig.current_action === 'flat' ? '空仓'
+    : '持有';
   const posClass = sig.current_action === 'buy' ? 'signal-long' : sig.current_action === 'sell' ? 'signal-short' : 'signal-neutral';
   const expPct = (sig.target_exposure != null) ? (sig.target_exposure * 100).toFixed(0) + '%' : '—';
   const nav = data.equity_curve && data.equity_curve.length > 0
-    ? data.equity_curve[data.equity_curve.length - 1][1] : '—';
+    ? data.equity_curve[data.equity_curve.length - 1].value : '—';
   const params = meta.parameters || [];
   const formulas = meta.formula_blocks || [];
 
@@ -209,28 +223,39 @@ function buildCard(meta, data) {
         <div class="card-title" style="color:var(--accent-light);">${meta.name} · ${meta.index_name}</div>
         <div style="font-size:12px;color:var(--muted);margin-top:2px;">${meta.description || ''}</div>
       </div>
-      <span class="signal-badge ${posClass}">${posLabel} · ${expPct}</span>
     </div>
 
     <!-- Signal + Metrics -->
     <div class="metrics-row">
-      <div class="metric-chip"><div class="metric-label">累积净值</div><div class="metric-value">${formatNum(nav, 4)}</div></div>
-      <div class="metric-chip"><div class="metric-label">年化收益</div><div class="metric-value ${(m.annual_return||0)>=0?'positive':'negative'}">${formatPct(m.annual_return)}</div></div>
       <div class="metric-chip"><div class="metric-label">最大回撤</div><div class="metric-value negative">${formatPct(m.max_drawdown)}</div></div>
-      <div class="metric-chip"><div class="metric-label">Calmar</div><div class="metric-value">${formatNum(m.calmar)}</div></div>
-      <div class="metric-chip"><div class="metric-label">月胜率</div><div class="metric-value">${formatPct(m.win_rate)}</div></div>
+      <div class="metric-chip"><div class="metric-label">Calmar</div><div class="metric-value">${formatNum(m.calmar_ratio)}</div></div>
+      <div class="metric-chip"><div class="metric-label">年化收益</div><div class="metric-value">${formatPct(m.annual_return)}</div></div>
+      <div class="metric-chip"><div class="metric-label">累积净值</div><div class="metric-value">${formatNum(nav, 4)}</div></div>
+      <div class="metric-chip"><div class="metric-label">月胜率</div><div class="metric-value">${formatPct(data.win_rate)}</div></div>
       <div class="metric-chip"><div class="metric-label">当前信号日</div><div class="metric-value" style="font-size:12px;">${sig.as_of_date || '—'}</div></div>
     </div>
 
-    <!-- Position / Details -->
+    <div class="position-chip" style="margin-top:12px;">固定 OOS：${data.holdout_metrics || data.oos_metrics ? '当前缓存响应已提供，请结合对应指标阅读' : '当前缓存响应未提供 OOS 指标'}</div>
+
+    <!-- Chart -->
+    <div class="chart-container" id="chart-${meta.id}"></div>
+    <p class="qr-chart-summary">策略净值曲线按当前缓存点位绘制；训练截止标记只说明时间边界，不代表浏览器完成 OOS 认证。</p>
+
+    <!-- Current cached signal -->
     <div style="margin-top:12px;font-size:12px;color:var(--text-secondary);">
-      信号原因：${sig.current_reason || '—'}<br>
+      <span class="signal-badge ${posClass}">当前缓存信号：${posLabel} · ${expPct}</span><br>
+      <span style="display:inline-block;margin-top:8px;">信号原因：${sig.current_reason || '—'}</span><br>
       ${sig.etf_code ? 'ETF: ' + sig.etf_code + ' · ' + (sig.etf_name || '') : ''}
+    </div>
+
+    <div class="positions-grid" style="margin-top:12px;">
+      <div class="position-chip"><b>当前仓位</b><br>目标: ${expPct} · 信号: ${posLabel}</div>
+      <div class="position-chip"><b>训练截止</b><br>${data.training_cutoff || '—'}</div>
     </div>
 
     <!-- Parameters -->
     <details style="margin-top:12px;">
-      <summary style="cursor:pointer;font-size:13px;color:var(--accent-light);">策略参数 & 公式</summary>
+      <summary style="cursor:pointer;font-size:13px;color:var(--accent-light);">查询已有缓存的策略参数 & 公式</summary>
       <div style="margin-top:8px;">
         ${params.map(p => `
           <div class="param-row">
@@ -250,18 +275,10 @@ function buildCard(meta, data) {
             </div>
           `).join('')}
         </div>
-        <button class="btn btn-primary" style="margin-top:8px;" onclick="applyParams('${meta.id}')">应用并重跑</button>
+        <button class="btn btn-primary" style="margin-top:8px;" onclick="applyParams('${meta.id}')">查询对应缓存结果</button>
       </div>
     </details>
 
-    <!-- Chart -->
-    <div class="chart-container" id="chart-${meta.id}"></div>
-
-    <!-- Position details -->
-    <div class="positions-grid" style="margin-top:12px;">
-      <div class="position-chip"><b>当前仓位</b><br>目标: ${expPct} · 信号: ${posLabel}</div>
-      <div class="position-chip"><b>训练截止</b><br>${data.training_cutoff || '—'}</div>
-    </div>
   `;
   return div;
 }
@@ -304,25 +321,31 @@ function initChart(sid) {
 }
 
 async function onParamChange(input) {
-  // Parameter changes are collected and applied via "应用并重跑" button
+  // Parameter changes are collected and queried via the cache-result button.
 }
 
 async function applyParams(sid) {
+  const generation = ++backtestGeneration;
   const inputs = document.querySelectorAll(`input[data-strategy="${sid}"]`);
   const params = {};
   inputs.forEach(inp => { params[inp.dataset.key] = inp.value; });
-  showLoading('重新计算...');
+  showLoading('正在查询对应缓存...');
   try {
     const qs = new URLSearchParams({ strategy: sid, profile: 'best', ...params });
     const resp = await fetch('/api/commodity/backtest?' + qs.toString());
     const data = await resp.json();
     if (data.error) throw new Error(data.error);
+    if (generation !== backtestGeneration) return;
     allData[sid] = data;
     renderCards();
     hideLoading();
   } catch(e) {
+    if (generation !== backtestGeneration) return;
     hideLoading();
-    alert('重跑失败: ' + e.message);
+    const detail = /cache_miss|缓存缺失|没有对应缓存|未就绪/i.test(e.message || '')
+      ? '当前配置没有对应缓存；浏览器不会在线重算。'
+      : e.message;
+    alert('缓存查询失败: ' + detail);
   }
 }
 
@@ -337,11 +360,10 @@ async function updateIndexData() {
     });
     if (r.aborted) { msg.textContent = r.reason === 'no_update_needed' ? '数据已最新' : r.detail || '更新中止'; }
     else { msg.textContent = '刷新完成'; }
-  } finally { btn.disabled = false; btn.textContent = '↻ 刷新数据'; }
+  } finally { btn.disabled = false; btn.textContent = '↻ 更新指数/ETF数据'; }
 }
 
 document.addEventListener('DOMContentLoaded', init);
 window.addEventListener('resize', () => Object.values(CHARTS).forEach(c => c.resize()));
 </script>
-</body>
-</html>
+{% endblock %}

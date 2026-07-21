@@ -1,9 +1,7 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>量化择时策略</title>
+{% extends "base.html" %}
+{% set page_key = "cn-timing" %}
+{% block title %}A 股指数择时研究{% endblock %}
+{% block page_head %}
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
   <style>
     :root {
@@ -168,26 +166,28 @@
     .error-banner { background: #ffeaa7; border: 1px solid #fdcb6e; border-radius: 8px; padding: 12px 16px; margin-bottom: 14px; font-size: 14px; color: #8a6800; }
     select.ctrl-select { padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; background: var(--bg); color: var(--text); cursor: pointer; }
   </style>
-</head>
-<body>
+{% endblock %}
+{% block content %}
 <div class="app">
 
   <!-- Header -->
-  <div class="header">
-    <div>
-      <h1>量化择时策略 · 指数买卖时机分析</h1>
-      <div class="subtitle">红色 ▲ = 买入信号 [B]&ensp;·&ensp;绿色 ▼ = 卖出信号 [S]&ensp;·&ensp;三个指数独立策略</div>
+  <section class="qr-page-intro" aria-labelledby="page-title">
+    <div class="qr-page-intro__copy">
+      <p class="qr-eyebrow">A 股 · 指数择时</p>
+      <h1 id="page-title">A 股指数择时研究</h1>
+      <div class="subtitle">中证1000、科创50与创业板独立策略；先看风险、基准与曲线，再看交易和当前信号。</div>
+      <div class="qr-context-line" aria-label="当前研究上下文">
+        <span class="qr-context-chip qr-context-chip--cache">既有缓存结果</span>
+        <span class="qr-context-chip">近期切片：1m / 1q / 6m</span>
+        <span id="data-date-badge" class="qr-context-chip">数据更新至: —</span>
+      </div>
     </div>
-    <div style="display:flex;gap:8px;align-items:center;">
-      <a href="/" class="btn btn-secondary" style="text-decoration:none;">选股策略</a>
-      <a href="/timing" class="btn btn-secondary" style="text-decoration:none;background:var(--accent);color:#fff;">A股择时</a>
-      <a href="/us_timing" class="btn btn-secondary" style="text-decoration:none;">美股择时</a>
-      <a href="/hk_timing" class="btn btn-secondary" style="text-decoration:none;">港股择时</a>
-      <a href="/commodity" class="btn btn-secondary" style="text-decoration:none;">大宗商品</a>
-      <a href="/live" class="btn btn-secondary" style="text-decoration:none;">实盘记录</a>
-      <span id="data-date-badge" style="font-size:12px;color:var(--muted);">数据更新至: —</span>
+    <div class="qr-page-intro__actions">
+      <button class="btn btn-primary" onclick="runAllBacktests()">查看缓存结果</button>
     </div>
-  </div>
+  </section>
+
+  <p class="qr-reading-note"><strong>阅读顺序：</strong>最大回撤与 Calmar → 策略相对 ETF 的超额 → 净值与仓位曲线 → 近期切片 → 交易、公式与参数。参数只查询已有缓存。</p>
 
   <!-- Error banner -->
   <div id="error-banner" class="error-banner hidden"></div>
@@ -226,8 +226,8 @@
     <input type="date" id="start-date" class="date-input" onchange="clearPeriodActive()" />
     <label style="font-size:12px;color:var(--muted);">结束</label>
     <input type="date" id="end-date"   class="date-input" onchange="clearPeriodActive()" />
-    <button class="btn btn-primary" onclick="runAllBacktests()">运行回测</button>
-    <button class="btn btn-secondary" onclick="updateIndexData()" id="btn-update-index">↻ 刷新指数/ETF数据</button>
+    <button class="btn btn-primary" onclick="runAllBacktests()">查看缓存结果</button>
+    <button class="btn btn-secondary" onclick="updateIndexData()" id="btn-update-index">↻ 更新指数/ETF数据</button>
     <span id="index-update-msg" style="font-size:12px;color:var(--muted);"></span>
     <span id="window-zone-tag" style="margin-left:auto;font-size:12.5px;font-weight:600;"></span>
   </div>
@@ -280,6 +280,7 @@
 
   let strategyList = [];
   let allData      = {};   // strategyId -> backtest JSON
+  let backtestGeneration = 0;
   let paramConfigsByStrategy = {};
   let timingInfo   = null;
   let _loadingTimer = null;
@@ -538,29 +539,15 @@
             <div class="card-desc">${s.name}</div>
           </div>
         </div>
-        <div class="signal-bar">
-          <div class="signal-main">
-            <span class="signal-label">当前信号</span>
-            <span class="signal-badge badge-flat" id="badge-${s.id}">○ 等待中</span>
-          </div>
-          <div class="signal-actions">
-            <div class="trade-detail-entry" id="trade-detail-entry-${s.id}">
-              <button class="trade-detail-trigger" onclick="showTradeDetails('${s.id}')">
-                <span>查看ETF交易明细</span>
-                <span id="inline-trade-summary-${s.id}">最近交易 —</span>
-              </button>
-            </div>
-          </div>
+        <div class="metrics-strip" id="metrics2-${s.id}">
+          <div class="metric-cell"><div class="lbl">最大回撤</div><div class="val val-neu" id="m-mdd-${s.id}">—</div></div>
+          <div class="metric-cell"><div class="lbl">收益/回撤比</div><div class="val val-neu" id="m-cal-${s.id}">—</div></div>
+          <div class="metric-cell"><div class="lbl">年化收益</div><div class="val val-neu" id="m-ann-${s.id}">—</div></div>
         </div>
         <div class="metrics-strip" id="metrics1-${s.id}">
           <div class="metric-cell"><div class="lbl">累积净值</div><div class="val val-neu" id="m-nav-${s.id}">—</div></div>
           <div class="metric-cell"><div class="lbl">区间收益</div><div class="val val-neu" id="m-tot-${s.id}">—</div></div>
-          <div class="metric-cell"><div class="lbl">年化收益</div><div class="val val-neu" id="m-ann-${s.id}">—</div></div>
-        </div>
-        <div class="metrics-strip" id="metrics2-${s.id}">
-          <div class="metric-cell"><div class="lbl">最大回撤</div><div class="val val-neu" id="m-mdd-${s.id}">—</div></div>
           <div class="metric-cell"><div class="lbl">月度胜率</div><div class="val val-neu" id="m-wr-${s.id}">—</div></div>
-          <div class="metric-cell"><div class="lbl">收益/回撤比</div><div class="val val-neu" id="m-cal-${s.id}">—</div></div>
         </div>
         <div class="metrics-strip" id="metrics3-${s.id}">
           <div class="metric-cell"><div class="lbl">ETF区间收益</div><div class="val val-neu" id="m-etf-ret-${s.id}">—</div></div>
@@ -572,6 +559,7 @@
           <div class="split-cell"><div class="split-label">近一季</div><div class="split-value val-neu" id="w-1q-summary-${s.id}">—</div></div>
           <div class="split-cell"><div class="split-label">近一月</div><div class="split-value val-neu" id="w-1m-summary-${s.id}">—</div></div>
         </div>
+        <div class="card-footer" id="oos-status-${s.id}">固定 OOS：当前缓存响应未提供 OOS 指标</div>
         <div class="card-footer" id="window-ranges-${s.id}" style="border-top:none;border-bottom:1px solid var(--border);background:#fafcff;">—</div>
         <div class="position-strip" id="position-${s.id}">
           <div class="position-item"><div class="lbl">初始资金</div><div class="val val-neu" id="p-init-${s.id}">—</div></div>
@@ -587,6 +575,21 @@
           <div class="col-loading" id="col-loading-${s.id}">加载中...</div>
           <div class="col-chart-inner hidden" id="chart-${s.id}"></div>
         </div>
+        <p class="qr-chart-summary" style="padding:0 14px 12px;">价格、策略净值与仓位水位共用时间轴；买卖标记来自当前缓存交易记录。</p>
+        <div class="signal-bar">
+          <div class="signal-main">
+            <span class="signal-label">当前缓存信号</span>
+            <span class="signal-badge badge-flat" id="badge-${s.id}">○ 等待中</span>
+          </div>
+          <div class="signal-actions">
+            <div class="trade-detail-entry" id="trade-detail-entry-${s.id}">
+              <button class="trade-detail-trigger" onclick="showTradeDetails('${s.id}')">
+                <span>查看ETF交易明细</span>
+                <span id="inline-trade-summary-${s.id}">最近交易 —</span>
+              </button>
+            </div>
+          </div>
+        </div>
         <div class="formula-section" id="formula-section-${s.id}">
           <div class="formula-title">策略原理与数学公式</div>
           <div class="formula-summary" id="formula-summary-${s.id}">加载中...</div>
@@ -595,8 +598,8 @@
         </div>
         <div class="param-section" id="param-section-${s.id}">
           <div class="param-header">
-            <div class="param-title">${s.index_name || s.name} 参数调整</div>
-            <button class="btn btn-primary" onclick="runSingleBacktest('${s.id}')">应用并重跑</button>
+            <div class="param-title">${s.index_name || s.name} · 查询已有缓存的参数</div>
+            <button class="btn btn-primary" onclick="runSingleBacktest('${s.id}')">查询对应缓存结果</button>
           </div>
           <div id="best-profile-${s.id}"></div>
           <div class="factor-grid" id="factor-grid-${s.id}">
@@ -618,6 +621,17 @@
     const lat = data.current_signal || data.signal_summary || {};
     const pos = data.position_snapshot || {};
     const ts  = data.trade_summary || {};
+    const oos = data.holdout_metrics || data.oos_metrics;
+    const oosEl = document.getElementById(`oos-status-${sid}`);
+    if (oosEl) {
+      if (oos && typeof oos === 'object') {
+        const oosAnnual = oos.annual_return ?? oos.annualized_return ?? '—';
+        const oosDrawdown = oos.max_drawdown ?? '—';
+        oosEl.textContent = `固定 OOS：年化 ${oosAnnual} · 最大回撤 ${oosDrawdown}`;
+      } else {
+        oosEl.textContent = '固定 OOS：当前缓存响应未提供 OOS 指标';
+      }
+    }
     const etf = data.etf_summary || {};
 
     // Badge
@@ -1147,6 +1161,7 @@
 
   /* ── Run all 3 in parallel ── */
   async function runAllBacktests() {
+    const generation = ++backtestGeneration;
     document.getElementById('error-banner').classList.add('hidden');
     strategyList.forEach(s => {
       const loading = document.getElementById(`col-loading-${s.id}`);
@@ -1155,6 +1170,7 @@
       const c = document.getElementById(`chart-${s.id}`); if (c) c.classList.add('hidden');
     });
     const results = await Promise.allSettled(strategyList.map(s => fetchBacktest(s.id)));
+    if (generation !== backtestGeneration) return;
     results.forEach((res, i) => {
       const s = strategyList[i];
       if (res.status === 'fulfilled') {
@@ -1162,13 +1178,17 @@
         renderColumn(s.id, res.value, COLORS[i % COLORS.length]);
       } else {
         const el = document.getElementById(`col-loading-${s.id}`);
-        if (el) el.textContent = '加载失败: ' + (res.reason?.message || '未知错误');
+        const message = res.reason?.message || '未知错误';
+        if (el) el.textContent = /cache_miss|缓存缺失|没有对应缓存|未就绪/i.test(message)
+          ? '当前配置没有对应缓存；浏览器不会在线重算。'
+          : '加载失败: ' + message;
       }
     });
     renderTradeHistory();
   }
 
   async function runSingleBacktest(sid) {
+    const generation = ++backtestGeneration;
     const idx = strategyList.findIndex(s => s.id === sid);
     const loading = document.getElementById(`col-loading-${sid}`);
     const chartEl = document.getElementById(`chart-${sid}`);
@@ -1176,10 +1196,14 @@
     if (chartEl) chartEl.classList.add('hidden');
     try {
       const data = await fetchBacktest(sid);
+      if (generation !== backtestGeneration) return;
       allData[sid] = data;
       renderColumn(sid, data, COLORS[idx % COLORS.length]);
     } catch (e) {
-      if (loading) loading.textContent = '加载失败: ' + e.message;
+      if (generation !== backtestGeneration) return;
+      if (loading) loading.textContent = /cache_miss|缓存缺失|没有对应缓存|未就绪/i.test(e.message || '')
+        ? '当前配置没有对应缓存；浏览器不会在线重算。'
+        : '加载失败: ' + e.message;
     }
     renderTradeHistory();
   }
@@ -1282,7 +1306,7 @@
       await loadParamsForAllStrategies();
 
       setQuickPeriod(6, { skipRun: true });
-      showLoading('正在运行三组回测...', 82);
+      showLoading('正在加载三组缓存结果...', 82);
       await runAllBacktests();
 
     } catch (e) {
@@ -1337,5 +1361,4 @@
   }
 </script>
 <script src="/static/js/data_update_flow.js"></script>
-</body>
-</html>
+{% endblock %}
