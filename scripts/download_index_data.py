@@ -6,7 +6,10 @@ import pandas as pd
 from datetime import datetime
 from pandas_datareader import data as pdr
 
-DATA_DIR = "/Users/fatcat/Desktop/quant/data"
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.dirname(_HERE)
+DATA_DIR = os.path.join(_REPO_ROOT, "data")
+os.makedirs(DATA_DIR, exist_ok=True)
 START = datetime(2005, 1, 1)
 END = datetime.today()
 
