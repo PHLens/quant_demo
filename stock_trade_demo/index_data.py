@@ -278,18 +278,23 @@ def _em_secid_from_sina_symbol(symbol):
     raise ValueError(f'Unknown symbol format for East Money mapping: {symbol}')
 
 
-def _fetch_daily_kline_eastmoney(symbol):
-    """从东方财富 push2his 拉日 K（未复权，跟 Sina 同等口径）。
+def _fetch_daily_kline_eastmoney(symbol, adjust=''):
+    """从东方财富 push2his 拉日 K。
 
-    返回与 _fetch_daily_kline 完全一致的 DataFrame，可直接当 drop-in 替代。
+    ``adjust=''`` 时与 Sina 一样是未复权口径；ETF 主链也可传
+    ``adjust='qfq'`` 直接取前复权数据。返回与 _fetch_daily_kline 一致的
+    DataFrame，可直接当 drop-in 替代。
     """
+    adjust_map = {'': '0', 'qfq': '1', 'hfq': '2'}
+    if adjust not in adjust_map:
+        raise ValueError(f'Unsupported East Money adjust mode: {adjust}')
     secid = _em_secid_from_sina_symbol(symbol)
-    # klt=101 日线，fqt=0 未复权（跟 Sina 一致）
+    # klt=101 日线；fqt=0/1/2 分别为未复权/前复权/后复权。
     url = (
         'https://push2his.eastmoney.com/api/qt/stock/kline/get'
         f'?secid={secid}&fields1=f1,f2,f3,f4,f5,f6'
         '&fields2=f51,f52,f53,f54,f55,f56,f57,f58'  # date, open, close, high, low, volume, amount, amplitude
-        '&klt=101&fqt=0&beg=20050101&end=20500101'
+        f'&klt=101&fqt={adjust_map[adjust]}&beg=20050101&end=20500101'
     )
     req = urllib.request.Request(url)
     req.add_header('User-Agent',
@@ -583,7 +588,8 @@ def get_timing_etf_daily(index_id='csi1000', force_refetch=False, adjust=None):
     """Get cached daily K-line data for the user-specified ETF mapped to a timing index.
 
     主路径：akshare.fund_etf_hist_em(adjust='qfq')，前复权，分红日不会被误判为下跌。
-    Fallback：原 Sina 未复权路径（仅在 akshare 抓取失败时使用，并在 logger 中 warn）。
+    Fallback 1：带浏览器请求头的东方财富直连，仍保持 qfq 口径。
+    Fallback 2：原 Sina/东方财富未复权路径（仅在两条 qfq 线路都失败时使用）。
     缓存 key 包含 adjust，避免与旧未复权缓存撞键。
     """
     if index_id not in TIMING_ETF_CONFIGS:
@@ -622,13 +628,36 @@ def get_timing_etf_daily(index_id='csi1000', force_refetch=False, adjust=None):
         raise
     except _NETWORK_FETCH_EXCEPTIONS as ak_err:
         logger.warning(
-            "[index_data] akshare fetch failed for %s (%s, adjust=%s): %s; falling back to Sina (un-adjusted).",
+            "[index_data] akshare fetch failed for %s (%s, adjust=%s): %s; trying direct East Money.",
             cfg['name'], cfg['code'], adjust, ak_err,
         )
         print(f"[index_data] WARN akshare failed for {cfg['name']} ({cfg['code']}): {ak_err}; "
-              f"falling back to Sina un-adjusted feed")
+              f"trying direct East Money {adjust} feed")
 
-    # Fallback：未复权抓取（Sina → East Money 双线）。注意：未复权数据在分红日会有
+    # Fallback 1：仍然从东方财富取前复权，但改用已经在指数链路验证过的
+    # urllib + User-Agent/Referer 直连。akshare 的 requests 调用被上游断开时，
+    # 这条线可以保持 qfq 口径，避免因为未复权 fallback 更新了而运行时仍停在旧 qfq。
+    try:
+        print(f"[index_data] Fetching {cfg['name']} ({cfg['code']}) daily K-line "
+              f"via direct East Money (adjust={adjust})...")
+        df_daily = _fetch_daily_kline_eastmoney(cfg['symbol'], adjust=adjust)
+        atomic_write_csv(cache_file, _stringify_date_column(df_daily), index=False, schema=INDEX_DAILY_SCHEMA,
+                         produced_by=f"index_data.get_timing_etf_daily:eastmoney:{cfg['symbol']}:{adjust}")
+        print(f"[index_data] Cached ETF daily K-line to {cache_file} via direct East Money ({len(df_daily)} rows)")
+        return df_daily
+    except (SchemaError, SchemaErrors):
+        print(f"[index_data] FATAL direct East Money ETF data for {cfg['name']} failed schema validation; refusing fallback")
+        raise
+    except _NETWORK_FETCH_EXCEPTIONS as em_err:
+        logger.warning(
+            "[index_data] direct East Money adjusted fetch also failed for %s (%s, adjust=%s): %s; "
+            "falling back to un-adjusted feed.",
+            cfg['name'], cfg['code'], adjust, em_err,
+        )
+        print(f"[index_data] WARN direct East Money {adjust} fetch failed for {cfg['name']}: {em_err}; "
+              f"falling back to un-adjusted feed")
+
+    # Fallback 2：未复权抓取（Sina → East Money 双线）。注意：未复权数据在分红日会有
     # 跳水缺口，只在 akshare 不可用时作为 best-effort。
     try:
         print(f"[index_data] Fetching {cfg['name']} ({cfg['code']}) daily K-line via Sina → East Money fallback (un-adjusted)...")
