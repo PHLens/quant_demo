@@ -281,6 +281,7 @@
   let strategyList = [];
   let allData      = {};   // strategyId -> backtest JSON
   let backtestGeneration = 0;
+  let allBacktestsPending = 0;
   let paramConfigsByStrategy = {};
   let timingInfo   = null;
   let _loadingTimer = null;
@@ -605,7 +606,7 @@
         <div class="param-section" id="param-section-${s.id}">
           <div class="param-header">
             <div class="param-title">${safeText(s.index_name || s.name)} · 查询已有缓存的参数</div>
-            <button class="btn btn-primary" onclick="runSingleBacktest('${s.id}')">查询对应缓存结果</button>
+            <button class="btn btn-primary single-backtest-btn" onclick="runSingleBacktest('${s.id}')">查询对应缓存结果</button>
           </div>
           <div id="best-profile-${s.id}"></div>
           <div class="factor-grid" id="factor-grid-${s.id}">
@@ -1168,6 +1169,8 @@
   /* ── Run all 3 in parallel ── */
   async function runAllBacktests() {
     const generation = ++backtestGeneration;
+    allBacktestsPending += 1;
+    document.querySelectorAll('.single-backtest-btn').forEach(btn => { btn.disabled = true; });
     document.getElementById('error-banner').classList.add('hidden');
     strategyList.forEach(s => {
       const loading = document.getElementById(`col-loading-${s.id}`);
@@ -1175,25 +1178,33 @@
       loading?.classList.remove('hidden');
       const c = document.getElementById(`chart-${s.id}`); if (c) c.classList.add('hidden');
     });
-    const results = await Promise.allSettled(strategyList.map(s => fetchBacktest(s.id)));
-    if (generation !== backtestGeneration) return;
-    results.forEach((res, i) => {
-      const s = strategyList[i];
-      if (res.status === 'fulfilled') {
-        allData[s.id] = res.value;
-        renderColumn(s.id, res.value, COLORS[i % COLORS.length]);
-      } else {
-        const el = document.getElementById(`col-loading-${s.id}`);
-        const message = res.reason?.message || '未知错误';
-        if (el) el.textContent = /cache_miss|缓存缺失|没有对应缓存|未就绪/i.test(message)
-          ? '当前配置没有对应缓存；浏览器不会在线重算。'
-          : '加载失败: ' + message;
+    try {
+      const results = await Promise.allSettled(strategyList.map(s => fetchBacktest(s.id)));
+      if (generation !== backtestGeneration) return;
+      results.forEach((res, i) => {
+        const s = strategyList[i];
+        if (res.status === 'fulfilled') {
+          allData[s.id] = res.value;
+          renderColumn(s.id, res.value, COLORS[i % COLORS.length]);
+        } else {
+          const el = document.getElementById(`col-loading-${s.id}`);
+          const message = res.reason?.message || '未知错误';
+          if (el) el.textContent = /cache_miss|缓存缺失|没有对应缓存|未就绪/i.test(message)
+            ? '当前配置没有对应缓存；浏览器不会在线重算。'
+            : '加载失败: ' + message;
+        }
+      });
+      renderTradeHistory();
+    } finally {
+      allBacktestsPending -= 1;
+      if (allBacktestsPending === 0) {
+        document.querySelectorAll('.single-backtest-btn').forEach(btn => { btn.disabled = false; });
       }
-    });
-    renderTradeHistory();
+    }
   }
 
   async function runSingleBacktest(sid) {
+    if (allBacktestsPending > 0) return;
     const generation = ++backtestGeneration;
     const idx = strategyList.findIndex(s => s.id === sid);
     const loading = document.getElementById(`col-loading-${sid}`);
