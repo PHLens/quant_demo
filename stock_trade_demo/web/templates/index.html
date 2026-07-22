@@ -418,6 +418,14 @@
 
   @media (max-width: 900px) {
     .metrics-row { grid-template-columns: repeat(2, 1fr); }
+    .factor-grid,
+    .factor-metric-legend .legend-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .factor-grid > *,
+    .factor-metric-legend .legend-grid > * {
+      min-width: 0;
+    }
   }
 
   /* Factor comparison panel */
