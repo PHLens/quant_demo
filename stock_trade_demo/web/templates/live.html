@@ -73,6 +73,10 @@
     .meta-table td.meta-val { color: var(--text); font-variant-numeric: tabular-nums; }
     .meta-table tr:last-child td { border-bottom: none; }
     .meta-table tr.meta-holdout td { background: #ece9ff; font-weight: 700; }
+    @media (max-width: 767px) {
+      .meta-table { min-width: 0 !important; table-layout: fixed; }
+      .meta-table td { overflow-wrap: anywhere; }
+    }
     .research-warning { background: #fff3f3; border: 1px solid var(--red); border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; color: #8b1f1f; font-size: 13px; line-height: 1.5; }
     .research-warning strong { color: var(--red); }
     .research-warning .rule-explain { display: inline-block; margin: 4px 0; font-size: 12px; color: #6c4040; line-height: 1.55; }

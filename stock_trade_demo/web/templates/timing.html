@@ -142,6 +142,10 @@
 
     .changelog-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; }
     .changelog-item { border: 1px solid var(--border); border-radius: 14px; padding: 16px; background: linear-gradient(180deg, #fcfdff 0%, #f8fbff 100%); }
+    @media (max-width: 767px) {
+      .changelog-grid { grid-template-columns: minmax(0, 1fr); }
+      .changelog-grid > * { min-width: 0; }
+    }
     .changelog-kicker { font-size: 11px; color: var(--accent); font-weight: 700; letter-spacing: .6px; margin-bottom: 8px; }
     .changelog-head { display:flex; justify-content:space-between; align-items:flex-start; gap: 12px; margin-bottom: 8px; }
     .changelog-title { font-size: 16px; font-weight: 700; line-height: 1.4; }
