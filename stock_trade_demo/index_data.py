@@ -278,23 +278,18 @@ def _em_secid_from_sina_symbol(symbol):
     raise ValueError(f'Unknown symbol format for East Money mapping: {symbol}')
 
 
-def _fetch_daily_kline_eastmoney(symbol, adjust=''):
-    """从东方财富 push2his 拉日 K。
+def _fetch_daily_kline_eastmoney(symbol):
+    """从东方财富 push2his 拉日 K（未复权，跟 Sina 同等口径）。
 
-    ``adjust=''`` 时与 Sina 一样是未复权口径；ETF 主链也可传
-    ``adjust='qfq'`` 直接取前复权数据。返回与 _fetch_daily_kline 一致的
-    DataFrame，可直接当 drop-in 替代。
+    返回与 _fetch_daily_kline 完全一致的 DataFrame，可直接当 drop-in 替代。
     """
-    adjust_map = {'': '0', 'qfq': '1', 'hfq': '2'}
-    if adjust not in adjust_map:
-        raise ValueError(f'Unsupported East Money adjust mode: {adjust}')
     secid = _em_secid_from_sina_symbol(symbol)
-    # klt=101 日线；fqt=0/1/2 分别为未复权/前复权/后复权。
+    # klt=101 日线，fqt=0 未复权（跟 Sina 一致）
     url = (
         'https://push2his.eastmoney.com/api/qt/stock/kline/get'
         f'?secid={secid}&fields1=f1,f2,f3,f4,f5,f6'
         '&fields2=f51,f52,f53,f54,f55,f56,f57,f58'  # date, open, close, high, low, volume, amount, amplitude
-        f'&klt=101&fqt={adjust_map[adjust]}&beg=20050101&end=20500101'
+        '&klt=101&fqt=0&beg=20050101&end=20500101'
     )
     req = urllib.request.Request(url)
     req.add_header('User-Agent',
@@ -325,6 +320,50 @@ def _fetch_daily_kline_eastmoney(symbol, adjust=''):
         })
     if not records:
         raise RuntimeError(f'East Money parsed 0 valid rows for secid={secid}')
+    df = pd.DataFrame(records)
+    df['date'] = pd.to_datetime(df['date'])
+    return df.sort_values('date').reset_index(drop=True)
+
+
+def _fetch_etf_daily_tencent_qfq(symbol, count=2000):
+    """通过腾讯 fqkline 取 ETF 前复权日线。
+
+    当标的上市后没有发生分红/拆分时，腾讯会把结果放在 ``day``
+    而不是 ``qfqday``；两者都是 qfq 请求的有效响应。
+    """
+    url = (
+        'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get'
+        f'?param={symbol},day,,,{int(count)},qfq'
+    )
+    req = urllib.request.Request(url)
+    req.add_header('User-Agent',
+                   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+                   'AppleWebKit/537.36 (KHTML, like Gecko) '
+                   'Chrome/120.0.0.0 Safari/537.36')
+    req.add_header('Referer', 'https://gu.qq.com/')
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        raw = resp.read().decode('utf-8')
+
+    payload = json.loads(raw)
+    node = ((payload.get('data') or {}).get(symbol) or {})
+    rows = node.get('qfqday') or node.get('day') or []
+    if not rows:
+        raise RuntimeError(f'Tencent returned no qfq daily rows for {symbol}')
+
+    records = []
+    for row in rows:
+        if len(row) < 6:
+            continue
+        records.append({
+            'date': row[0],
+            'open': float(row[1]),
+            'close': float(row[2]),
+            'high': float(row[3]),
+            'low': float(row[4]),
+            'volume': float(row[5]),
+        })
+    if not records:
+        raise RuntimeError(f'Tencent parsed 0 valid qfq daily rows for {symbol}')
     df = pd.DataFrame(records)
     df['date'] = pd.to_datetime(df['date'])
     return df.sort_values('date').reset_index(drop=True)
@@ -588,7 +627,7 @@ def get_timing_etf_daily(index_id='csi1000', force_refetch=False, adjust=None):
     """Get cached daily K-line data for the user-specified ETF mapped to a timing index.
 
     主路径：akshare.fund_etf_hist_em(adjust='qfq')，前复权，分红日不会被误判为下跌。
-    Fallback 1：带浏览器请求头的东方财富直连，仍保持 qfq 口径。
+    Fallback 1：A 股 ETF 通过腾讯 fqkline 抓取，仍保持 qfq 口径。
     Fallback 2：原 Sina/东方财富未复权路径（仅在两条 qfq 线路都失败时使用）。
     缓存 key 包含 adjust，避免与旧未复权缓存撞键。
     """
@@ -628,34 +667,32 @@ def get_timing_etf_daily(index_id='csi1000', force_refetch=False, adjust=None):
         raise
     except _NETWORK_FETCH_EXCEPTIONS as ak_err:
         logger.warning(
-            "[index_data] akshare fetch failed for %s (%s, adjust=%s): %s; trying direct East Money.",
+            "[index_data] akshare fetch failed for %s (%s, adjust=%s): %s; trying Tencent qfq.",
             cfg['name'], cfg['code'], adjust, ak_err,
         )
         print(f"[index_data] WARN akshare failed for {cfg['name']} ({cfg['code']}): {ak_err}; "
-              f"trying direct East Money {adjust} feed")
+              f"trying Tencent {adjust} feed")
 
-    # Fallback 1：仍然从东方财富取前复权，但改用已经在指数链路验证过的
-    # urllib + User-Agent/Referer 直连。akshare 的 requests 调用被上游断开时，
-    # 这条线可以保持 qfq 口径，避免因为未复权 fallback 更新了而运行时仍停在旧 qfq。
-    try:
-        print(f"[index_data] Fetching {cfg['name']} ({cfg['code']}) daily K-line "
-              f"via direct East Money (adjust={adjust})...")
-        df_daily = _fetch_daily_kline_eastmoney(cfg['symbol'], adjust=adjust)
-        atomic_write_csv(cache_file, _stringify_date_column(df_daily), index=False, schema=INDEX_DAILY_SCHEMA,
-                         produced_by=f"index_data.get_timing_etf_daily:eastmoney:{cfg['symbol']}:{adjust}")
-        print(f"[index_data] Cached ETF daily K-line to {cache_file} via direct East Money ({len(df_daily)} rows)")
-        return df_daily
-    except (SchemaError, SchemaErrors):
-        print(f"[index_data] FATAL direct East Money ETF data for {cfg['name']} failed schema validation; refusing fallback")
-        raise
-    except _NETWORK_FETCH_EXCEPTIONS as em_err:
-        logger.warning(
-            "[index_data] direct East Money adjusted fetch also failed for %s (%s, adjust=%s): %s; "
-            "falling back to un-adjusted feed.",
-            cfg['name'], cfg['code'], adjust, em_err,
-        )
-        print(f"[index_data] WARN direct East Money {adjust} fetch failed for {cfg['name']}: {em_err}; "
-              f"falling back to un-adjusted feed")
+    # Fallback 1：三个 A 股择时 ETF 改走腾讯独立 qfq 线路。它们都是近期上市，
+    # 2000 条足以覆盖全历史；其他跨境/商品 ETF 保持原行为，避免缩短长回测历史。
+    if index_id in A_SHARE_INDEX_IDS and adjust == 'qfq':
+        try:
+            print(f"[index_data] Fetching {cfg['name']} ({cfg['code']}) daily K-line via Tencent qfq...")
+            df_daily = _fetch_etf_daily_tencent_qfq(cfg['symbol'])
+            atomic_write_csv(cache_file, _stringify_date_column(df_daily), index=False, schema=INDEX_DAILY_SCHEMA,
+                             produced_by=f"index_data.get_timing_etf_daily:tencent:{cfg['symbol']}:qfq")
+            print(f"[index_data] Cached ETF daily K-line to {cache_file} via Tencent qfq ({len(df_daily)} rows)")
+            return df_daily
+        except (SchemaError, SchemaErrors):
+            print(f"[index_data] FATAL Tencent qfq ETF data for {cfg['name']} failed schema validation; refusing fallback")
+            raise
+        except _NETWORK_FETCH_EXCEPTIONS as tx_err:
+            logger.warning(
+                "[index_data] Tencent qfq fetch also failed for %s (%s): %s; falling back to un-adjusted feed.",
+                cfg['name'], cfg['code'], tx_err,
+            )
+            print(f"[index_data] WARN Tencent qfq fetch failed for {cfg['name']}: {tx_err}; "
+                  f"falling back to un-adjusted feed")
 
     # Fallback 2：未复权抓取（Sina → East Money 双线）。注意：未复权数据在分红日会有
     # 跳水缺口，只在 akshare 不可用时作为 best-effort。
