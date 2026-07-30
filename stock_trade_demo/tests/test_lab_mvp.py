@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
+import shutil
+import threading
 import time
 
 import pytest
@@ -15,7 +18,11 @@ from lab.contracts import (
 )
 from lab.runner import run_trend_validation, runner_fingerprint
 from lab.service import LabService
-from lab.snapshot import load_materialized_snapshot
+from lab.snapshot import (
+    DEFAULT_MANIFEST_PATH,
+    SnapshotIntegrityError,
+    load_materialized_snapshot,
+)
 from lab.store import canonical_json
 from web import state
 from web.app import create_app
@@ -260,6 +267,173 @@ def test_pure_runner_is_deterministic_and_only_needs_injected_snapshot():
     assert first == second
     assert first['metrics']['validation_bars'] == 485
     assert first['validity']['reproducible'] is True
+
+
+def test_dropped_limit_intent_stays_cancelled_until_signal_transition():
+    payload = load_materialized_snapshot().worker_payload()
+    for index, row in enumerate(payload['rows'], start=1):
+        price = float(index)
+        row['index_open'] = price
+        row['index_high'] = price
+        row['index_low'] = price
+        row['index_close'] = price
+    validation = [
+        row
+        for row in payload['rows']
+        if VALIDATION_WINDOW['start'] <= row['date'] <= VALIDATION_WINDOW['end']
+    ]
+    for row in validation[:8]:
+        row['etf_open'] = 1.0
+        row['etf_high'] = 1.0
+        row['etf_low'] = 1.0
+        row['etf_close'] = 1.0
+    for row in validation[1:7]:
+        row['etf_open'] = 1.1
+        row['etf_high'] = 1.1
+
+    result = run_trend_validation(payload, {'trend_window': 20})
+    actions = [row['trade_action'] for row in result['trace'][:8]]
+    assert actions[1:6] == ['blocked'] * 5
+    assert actions[6] == 'dropped'
+    assert actions[7] == 'cancelled'
+    assert result['trades'] == []
+
+
+@pytest.mark.parametrize(
+    ('field', 'value'),
+    [
+        ('snapshot_id', 'snapshot_csi1000_trend_101_v1_deadbeefdeadbeef'),
+        ('input_window', {'start': '2023-07-04', 'end': '2025-12-31'}),
+        ('validation_window', {'start': '2024-01-03', 'end': '2025-12-31'}),
+        ('as_of', '2025-12-30'),
+        ('calendar', 'unverified-calendar'),
+        ('timezone', 'UTC'),
+        ('parents', []),
+        ('row_count', '609'),
+        ('validation_row_count', '485'),
+    ],
+)
+def test_snapshot_manifest_rejects_unverified_identity_metadata(tmp_path, field, value):
+    manifest_path = tmp_path / DEFAULT_MANIFEST_PATH.name
+    shutil.copy2(DEFAULT_MANIFEST_PATH, manifest_path)
+    shutil.copy2(
+        DEFAULT_MANIFEST_PATH.parent / 'csi1000_trend_101_v1.csv',
+        tmp_path / 'csi1000_trend_101_v1.csv',
+    )
+    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    manifest[field] = value
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False),
+        encoding='utf-8',
+    )
+    with pytest.raises(SnapshotIntegrityError):
+        load_materialized_snapshot(manifest_path)
+
+
+def test_packaged_baseline_requires_full_snapshot_public_identity(tmp_path):
+    baseline_path = tmp_path / 'baseline.json'
+    baseline = build_baseline_document()
+    baseline['content']['data_snapshot']['as_of'] = '2025-12-30'
+    content_hash = hashlib.sha256(canonical_json(baseline['content'])).hexdigest()
+    baseline['result_id'] = content_hash
+    baseline['content_sha256'] = content_hash
+    baseline['baseline_result_id'] = content_hash
+    baseline_path.write_text(json.dumps(baseline), encoding='utf-8')
+    with pytest.raises(RuntimeError, match='snapshot public identity'):
+        LabService(tmp_path / 'artifacts', baseline_path=baseline_path)
+
+
+def test_variant_upgrade_requires_new_variant(monkeypatch, client, lab_app):
+    _, variant = _create_variant(client)
+    monkeypatch.setattr('lab.service.runner_fingerprint', lambda: 'f' * 64)
+    response = client.post(
+        f"/api/lab/variants/{variant['variant_id']}/runs",
+        json={},
+    )
+    assert response.status_code == 409
+    payload = response.get_json()
+    assert payload['error'] == 'variant_contract_stale'
+    assert payload['details']['mismatched_fields'] == ['runner']
+    assert lab_app.extensions['lab_service'].store.list('runs') == []
+
+
+def test_concurrent_same_variant_submissions_reuse_active_run(
+    monkeypatch, client, lab_app,
+):
+    _, variant = _create_variant(client)
+    started = threading.Event()
+    release = threading.Event()
+    original = run_trend_validation
+
+    def slow_runner(snapshot_payload, actual_config):
+        started.set()
+        assert release.wait(2.0)
+        return original(snapshot_payload, actual_config)
+
+    monkeypatch.setattr('lab.service.run_trend_validation', slow_runner)
+    first = client.post(
+        f"/api/lab/variants/{variant['variant_id']}/runs",
+        json={},
+    )
+    assert first.status_code == 202
+    assert started.wait(1.0)
+    second = client.post(
+        f"/api/lab/variants/{variant['variant_id']}/runs",
+        json={},
+    )
+    assert second.status_code == 202
+    assert second.get_json()['run_id'] == first.get_json()['run_id']
+    assert second.get_json()['deduplicated'] is True
+    assert len(lab_app.extensions['lab_service'].store.list('runs')) == 1
+    release.set()
+    run = _wait_for_run(client, first.get_json()['run_id'])
+    assert run['status'] == 'success'
+
+
+def test_result_artifact_recovers_interrupted_run_state(client, lab_app):
+    _, run, _ = _successful_result(client)
+    service = lab_app.extensions['lab_service']
+    interrupted = service.store.read('runs', run['run_id'])
+    interrupted['status'] = 'running'
+    interrupted['outcome'] = None
+    interrupted['finished_at'] = None
+    interrupted['result_id'] = None
+    interrupted['status_history'] = interrupted['status_history'][:-1]
+    service.store.write_run(run['run_id'], interrupted)
+    service.shutdown()
+
+    recovered_service = LabService(service.store.root, executor_kind='thread')
+    try:
+        recovered = recovered_service.get_run(run['run_id'])
+        assert recovered['status'] == 'success'
+        assert recovered['outcome'] == 'recovered_success'
+        assert recovered['result_id'] == run['result_id']
+        assert recovered['status_history'][-1]['reason'] == 'result_artifact_recovered'
+    finally:
+        recovered_service.shutdown()
+
+
+def test_executor_submit_failure_is_terminal_and_returns_503(
+    monkeypatch, client, lab_app,
+):
+    _, variant = _create_variant(client)
+
+    class FailingExecutor:
+        def submit(self, *args, **kwargs):
+            raise RuntimeError('executor closed')
+
+    service = lab_app.extensions['lab_service']
+    monkeypatch.setattr(service, '_get_executor', lambda: FailingExecutor())
+    response = client.post(
+        f"/api/lab/variants/{variant['variant_id']}/runs",
+        json={},
+    )
+    assert response.status_code == 503
+    payload = response.get_json()
+    assert payload['error'] == 'worker_unavailable'
+    run = service.get_run(payload['details']['run_id'])
+    assert run['status'] == 'failed'
+    assert run['error']['code'] == 'executor_submit_failed'
 
 
 def test_comparison_returns_delta_only_when_contract_is_strictly_comparable(

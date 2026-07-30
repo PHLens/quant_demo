@@ -3,6 +3,7 @@
 
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+  const ACTIVE_RUN_KEY = 'quantLabActiveRunId';
 
   async function api(url, options = {}) {
     const response = await fetch(url, {
@@ -144,24 +145,40 @@
 
   async function pollRun(page, runId) {
     const deadline = Date.now() + 120000;
+    let lastError = null;
     while (Date.now() < deadline) {
-      const run = await api(`/api/lab/runs/${encodeURIComponent(runId)}`);
-      renderRunStatus(page, run);
-      if (run.status === 'success' || run.status === 'skipped') {
-        const result = await api(`/api/lab/results/${encodeURIComponent(run.result_id)}`);
-        renderRunMetrics(page, result.content.evidence.metrics);
-        localStorage.setItem('quantLabCandidateResultId', run.result_id);
-        const link = $('[data-compare-link]', page);
-        link.href = `/compare?candidate=${encodeURIComponent(run.result_id)}`;
-        link.hidden = false;
-        return run;
-      }
-      if (run.status === 'failed') {
-        throw new Error(run.error?.message || 'worker run failed');
+      try {
+        const run = await api(`/api/lab/runs/${encodeURIComponent(runId)}`);
+        renderRunStatus(page, run);
+        if (run.status === 'success' || run.status === 'skipped') {
+          const result = await api(`/api/lab/results/${encodeURIComponent(run.result_id)}`);
+          renderRunMetrics(page, result.content.evidence.metrics);
+          localStorage.setItem('quantLabCandidateResultId', run.result_id);
+          localStorage.removeItem(ACTIVE_RUN_KEY);
+          const link = $('[data-compare-link]', page);
+          link.href = `/compare?candidate=${encodeURIComponent(run.result_id)}`;
+          link.hidden = false;
+          return run;
+        }
+        if (run.status === 'failed') {
+          localStorage.removeItem(ACTIVE_RUN_KEY);
+          throw new Error(run.error?.message || 'worker run failed');
+        }
+        lastError = null;
+      } catch (error) {
+        if (!localStorage.getItem(ACTIVE_RUN_KEY)) throw error;
+        lastError = error;
+        const status = $('[data-run-status]', page);
+        status.textContent = 'reconnecting';
+        status.parentElement.dataset.state = 'running';
       }
       await new Promise(resolve => window.setTimeout(resolve, 300));
     }
-    throw new Error('运行仍在后台执行，请稍后用 run_id 查询状态');
+    throw new Error(
+      lastError
+        ? `运行仍在后台执行，网络恢复后刷新页面将继续查询：${lastError.message}`
+        : '运行仍在后台执行，刷新页面将用已保存的 run_id 继续查询',
+    );
   }
 
   async function initLab() {
@@ -169,22 +186,15 @@
     if (!page) return;
     const form = $('[data-experiment-form]', page);
     const errorBox = $('[data-form-error]', page);
+    const submit = $('button[type="submit"]', form);
     let template;
-    try {
-      const payload = await api('/api/lab/templates');
-      template = payload.templates[0];
-      fillTemplateIdentity(page, template);
-    } catch (error) {
-      errorBox.hidden = false;
-      errorBox.textContent = `模板读取失败：${error.message}`;
-      $$('button, input, textarea, select', form).forEach(node => { node.disabled = true; });
-      return;
-    }
+    submit.disabled = true;
+    submit.textContent = '正在读取模板…';
 
     form.addEventListener('submit', async event => {
       event.preventDefault();
+      if (!template || submit.disabled) return;
       errorBox.hidden = true;
-      const submit = $('button[type="submit"]', form);
       submit.disabled = true;
       submit.textContent = '正在冻结假设…';
       const values = new FormData(form);
@@ -218,20 +228,56 @@
           method: 'POST',
           body: JSON.stringify({}),
         });
+        localStorage.setItem(ACTIVE_RUN_KEY, run.run_id);
         renderRunStatus(page, run);
         submit.textContent = 'Worker 运行中…';
         await pollRun(page, run.run_id);
         const freshTemplate = (await api('/api/lab/templates')).templates[0];
+        template = freshTemplate;
         fillTemplateIdentity(page, freshTemplate);
         submit.textContent = '已完成，可再次提交新假设';
       } catch (error) {
         errorBox.hidden = false;
         errorBox.textContent = error.message;
-        submit.textContent = '重新提交 validation';
+        submit.textContent = localStorage.getItem(ACTIVE_RUN_KEY)
+          ? '后台运行中，刷新可继续查询'
+          : '重新提交 validation';
       } finally {
-        submit.disabled = false;
+        submit.disabled = Boolean(localStorage.getItem(ACTIVE_RUN_KEY));
       }
     });
+
+    try {
+      const payload = await api('/api/lab/templates');
+      template = payload.templates[0];
+      fillTemplateIdentity(page, template);
+    } catch (error) {
+      errorBox.hidden = false;
+      errorBox.textContent = `模板读取失败：${error.message}`;
+      $$('button, input, textarea, select', form).forEach(node => { node.disabled = true; });
+      return;
+    }
+
+    const activeRunId = localStorage.getItem(ACTIVE_RUN_KEY);
+    if (activeRunId) {
+      submit.textContent = '正在恢复后台 run…';
+      try {
+        await pollRun(page, activeRunId);
+        const freshTemplate = (await api('/api/lab/templates')).templates[0];
+        template = freshTemplate;
+        fillTemplateIdentity(page, freshTemplate);
+        submit.textContent = '后台 run 已恢复，可再次提交新假设';
+      } catch (error) {
+        errorBox.hidden = false;
+        errorBox.textContent = error.message;
+        submit.textContent = localStorage.getItem(ACTIVE_RUN_KEY)
+          ? '后台运行中，刷新可继续查询'
+          : '重新提交 validation';
+      }
+    } else {
+      submit.textContent = '冻结假设并启动 validation';
+    }
+    submit.disabled = Boolean(localStorage.getItem(ACTIVE_RUN_KEY));
   }
 
   const metricLabels = {

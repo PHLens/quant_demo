@@ -1,5 +1,5 @@
 {
-  "baseline_result_id": "3862efb6ab6f3aab3ea90d8712ac714ff03f509dd532abff40c616c6f81250dc",
+  "baseline_result_id": "26e0634089bac926b5be70740441b3045b4127f07826ae6e3ec8c4beba0586b4",
   "content": {
     "actual_config": {
       "trend_window": 50
@@ -7233,7 +7233,7 @@
     "robustness": "not_required",
     "runner": {
       "contract_version": "lab_timing_snapshot_v1",
-      "fingerprint": "c3cdd33b6bb0d8fe863daacf2be19efa8ddf91d090c8cfc00c842c31ed7a5a84"
+      "fingerprint": "afa3847befea9e9991af8128781606842bee378862ecd202ac5d8d156ae6ed13"
     },
     "schema_version": "lab_result_v1",
     "seed_policy": "none",
@@ -7248,12 +7248,12 @@
       "variant_id": "variant_baseline_csi1000_trend_101_v1"
     }
   },
-  "content_sha256": "3862efb6ab6f3aab3ea90d8712ac714ff03f509dd532abff40c616c6f81250dc",
+  "content_sha256": "26e0634089bac926b5be70740441b3045b4127f07826ae6e3ec8c4beba0586b4",
   "hash_scope": "content",
   "provenance": {
     "build_mode": "offline_packaged_baseline",
-    "built_at": "2026-07-30T03:37:58.080834+00:00",
+    "built_at": "2026-07-30T04:44:53.452487+00:00",
     "producing_run_id": "run_baseline_csi1000_trend_101_v1"
   },
-  "result_id": "3862efb6ab6f3aab3ea90d8712ac714ff03f509dd532abff40c616c6f81250dc"
+  "result_id": "26e0634089bac926b5be70740441b3045b4127f07826ae6e3ec8c4beba0586b4"
 }

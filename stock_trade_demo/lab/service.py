@@ -29,8 +29,13 @@ from lab.contracts import (
     public_template,
 )
 from lab.runner import run_trend_validation, runner_fingerprint
-from lab.snapshot import DEFAULT_MANIFEST_PATH, load_materialized_snapshot
+from lab.snapshot import (
+    DEFAULT_MANIFEST_PATH,
+    SnapshotIntegrityError,
+    load_materialized_snapshot,
+)
 from lab.store import (
+    ArtifactConflictError,
     ArtifactNotFoundError,
     JsonArtifactStore,
     canonical_json,
@@ -100,6 +105,7 @@ class LabService:
         baseline_path: str | Path = DEFAULT_BASELINE_PATH,
     ):
         self.store = JsonArtifactStore(artifact_root)
+        self._submission_lock = threading.RLock()
         self.snapshot_manifest_path = Path(snapshot_manifest_path)
         self.baseline_path = Path(baseline_path)
         self.executor_kind = executor_kind
@@ -127,8 +133,8 @@ class LabService:
                 'packaged Lab baseline runner fingerprint is stale; rebuild baseline offline'
             )
         snapshot = load_materialized_snapshot(self.snapshot_manifest_path)
-        if _nested_get(content, 'data_snapshot.content_sha256') != snapshot.manifest['content_sha256']:
-            raise RuntimeError('packaged Lab baseline snapshot identity is stale')
+        if content.get('data_snapshot') != snapshot.public_identity():
+            raise RuntimeError('packaged Lab baseline snapshot public identity is stale')
         return baseline
 
     @property
@@ -156,11 +162,67 @@ class LabService:
         if executor is not None:
             executor.shutdown(wait=False, cancel_futures=True)
 
+    def _validate_result_document(
+        self,
+        result: dict[str, Any],
+        result_id: str,
+    ) -> dict[str, Any]:
+        content = result.get('content')
+        if not isinstance(content, dict):
+            raise LabError(
+                'result_integrity_error',
+                'result content is missing or invalid',
+                status=409,
+            )
+        actual_hash = hashlib.sha256(canonical_json(content)).hexdigest()
+        if (
+            actual_hash != result.get('result_id')
+            or actual_hash != result.get('content_sha256')
+            or actual_hash != result_id
+        ):
+            raise LabError(
+                'result_integrity_error',
+                'result content hash does not match its immutable identity',
+                status=409,
+                details={'expected_result_id': result_id, 'actual_content_sha256': actual_hash},
+            )
+        return result
+
     def _reconcile_interrupted_runs(self) -> None:
+        results_by_run: dict[str, dict[str, Any]] = {}
+        for result in self.store.list('results'):
+            result_id = result.get('result_id')
+            if not isinstance(result_id, str):
+                continue
+            try:
+                verified = self._validate_result_document(result, result_id)
+            except LabError:
+                continue
+            producing_run_id = _nested_get(verified, 'provenance.producing_run_id')
+            if isinstance(producing_run_id, str):
+                results_by_run[producing_run_id] = verified
+
         for run in self.store.list('runs'):
             if run.get('status') not in {'queued', 'running'}:
                 continue
             now = utc_now()
+            recovered = results_by_run.get(run.get('run_id'))
+            if (
+                recovered is not None
+                and _nested_get(recovered, 'content.variant.variant_id') == run.get('variant_id')
+            ):
+                run['status'] = 'success'
+                run['outcome'] = 'recovered_success'
+                run['finished_at'] = now
+                run['result_id'] = recovered['result_id']
+                run['error'] = None
+                run.setdefault('status_history', []).append({
+                    'status': 'success',
+                    'at': now,
+                    'reason': 'result_artifact_recovered',
+                })
+                self.store.write_run(run['run_id'], run)
+                continue
             run['status'] = 'failed'
             run['outcome'] = 'interrupted'
             run['finished_at'] = now
@@ -175,8 +237,42 @@ class LabService:
             })
             self.store.write_run(run['run_id'], run)
 
+    def _current_snapshot(self):
+        try:
+            return load_materialized_snapshot(self.snapshot_manifest_path)
+        except (SnapshotIntegrityError, FileNotFoundError, OSError, json.JSONDecodeError) as exc:
+            raise LabError(
+                'snapshot_integrity_error',
+                'the frozen Lab snapshot is unavailable or failed integrity verification',
+                status=503,
+                details={'reason': str(exc)},
+            ) from exc
+
+    def _variant_contract_mismatches(
+        self,
+        variant: dict[str, Any],
+        snapshot,
+    ) -> list[str]:
+        expected = {
+            'template_id': TEMPLATE_ID,
+            'template_version': TEMPLATE_VERSION,
+            'data_snapshot': snapshot.public_identity(),
+            'runner': {
+                'contract_version': RUNNER_CONTRACT_VERSION,
+                'fingerprint': runner_fingerprint(),
+            },
+            'fixed_policy': FIXED_POLICY,
+            'baseline_result_id': self.baseline_result_id,
+            'holdout_access': 'not_configured',
+        }
+        return [
+            field
+            for field, value in expected.items()
+            if variant.get(field) != value
+        ]
+
     def template(self) -> dict[str, Any]:
-        snapshot = load_materialized_snapshot(self.snapshot_manifest_path)
+        snapshot = self._current_snapshot()
         variant_ids = {
             variant['variant_id']
             for variant in self.store.list('variants')
@@ -355,7 +451,7 @@ class LabService:
                 'trend_window=50 is the locked baseline; choose 20 or 100 for a Variant',
             )
 
-        snapshot = load_materialized_snapshot(self.snapshot_manifest_path)
+        snapshot = self._current_snapshot()
         identity = {
             'template_id': TEMPLATE_ID,
             'template_version': TEMPLATE_VERSION,
@@ -400,153 +496,222 @@ class LabService:
         return self.store.read('variants', variant_id), created
 
     def _result_for_variant(self, variant_id: str) -> dict[str, Any] | None:
-        for run in self.store.list('runs'):
+        for result in self.store.list('results'):
+            result_id = result.get('result_id')
             if (
-                run.get('variant_id') == variant_id
-                and run.get('status') == 'success'
-                and run.get('result_id')
+                isinstance(result_id, str)
+                and _nested_get(result, 'content.variant.variant_id') == variant_id
             ):
                 try:
-                    return self.get_result(run['result_id'])
+                    return self._validate_result_document(result, result_id)
                 except LabError:
                     continue
         return None
 
+    def _active_run_for_variant(self, variant_id: str) -> dict[str, Any] | None:
+        active = [
+            run
+            for run in self.store.list('runs')
+            if (
+                run.get('variant_id') == variant_id
+                and run.get('status') in {'queued', 'running'}
+            )
+        ]
+        if not active:
+            return None
+        return sorted(active, key=lambda value: value.get('created_at', ''))[0]
+
     def submit_run(self, variant_id: str, payload: Any) -> tuple[dict[str, Any], int]:
         body = {} if payload is None else _expect_object(payload, 'request')
         _reject_unknown(body, set(), 'request')
-        try:
-            variant = self.store.read('variants', variant_id)
-        except (ArtifactNotFoundError, ValueError) as exc:
-            raise LabError('variant_not_found', 'variant not found', status=404) from exc
+        with self._submission_lock:
+            try:
+                variant = self.store.read('variants', variant_id)
+            except (ArtifactNotFoundError, ValueError) as exc:
+                raise LabError('variant_not_found', 'variant not found', status=404) from exc
 
-        run_id = _uuid_id('run')
-        now = utc_now()
-        run = {
-            'run_id': run_id,
-            'variant_id': variant_id,
-            'hypothesis_revision_id': variant['hypothesis_revision_id'],
-            'status': 'queued',
-            'outcome': None,
-            'actual_config': copy.deepcopy(variant['actual_config']),
-            'data_snapshot': copy.deepcopy(variant['data_snapshot']),
-            'runner': copy.deepcopy(variant['runner']),
-            'fixed_policy': copy.deepcopy(variant['fixed_policy']),
-            'baseline_result_id': self.baseline_result_id,
-            'holdout_access': 'not_configured',
-            'created_at': now,
-            'started_at': None,
-            'finished_at': None,
-            'result_id': None,
-            'error': None,
-            'status_history': [{'status': 'queued', 'at': now}],
-        }
+            snapshot = self._current_snapshot()
+            mismatches = self._variant_contract_mismatches(variant, snapshot)
+            if mismatches:
+                raise LabError(
+                    'variant_contract_stale',
+                    'Variant identity no longer matches the current frozen Lab contract; '
+                    'create a new Variant before running.',
+                    status=409,
+                    details={'mismatched_fields': mismatches, 'action': 'create_new_variant'},
+                )
 
-        reusable = self._result_for_variant(variant_id)
-        if reusable is not None:
-            run['status'] = 'skipped'
-            run['outcome'] = 'reused'
-            run['finished_at'] = now
-            run['result_id'] = reusable['result_id']
-            run['status_history'].append({
-                'status': 'skipped',
-                'at': now,
-                'reason': 'exact_result_reused',
-            })
-            self.store.write_run(run_id, run)
-            return run, 200
-
-        self.store.write_run(run_id, run)
-        snapshot = load_materialized_snapshot(self.snapshot_manifest_path)
-        future = self._get_executor().submit(
-            run_trend_validation,
-            snapshot.worker_payload(),
-            copy.deepcopy(variant['actual_config']),
-        )
-        started_at = utc_now()
-        run['status'] = 'running'
-        run['started_at'] = started_at
-        run['status_history'].append({'status': 'running', 'at': started_at})
-        self.store.write_run(run_id, run)
-        future.add_done_callback(
-            lambda completed, rid=run_id, var=copy.deepcopy(variant):
-                self._finish_run(rid, var, completed)
-        )
-        return run, 202
-
-    def _finish_run(self, run_id: str, variant: dict[str, Any], future) -> None:
-        try:
-            evidence = future.result()
-            experiment = self.store.read('experiments', variant['experiment_id'])
-            content = {
-                'schema_version': RESULT_SCHEMA_VERSION,
-                'artifact_label': 'Research Experiment',
-                'template': {
-                    'template_id': TEMPLATE_ID,
-                    'template_version': TEMPLATE_VERSION,
-                },
-                'variant': {
-                    'variant_id': variant['variant_id'],
-                    'canonical_patch': copy.deepcopy(variant['canonical_patch']),
-                },
-                'hypothesis_revision': copy.deepcopy(experiment['hypothesis_revision']),
+            run_id = _uuid_id('run')
+            now = utc_now()
+            run = {
+                'run_id': run_id,
+                'variant_id': variant_id,
+                'hypothesis_revision_id': variant['hypothesis_revision_id'],
+                'status': 'queued',
+                'outcome': None,
                 'actual_config': copy.deepcopy(variant['actual_config']),
                 'data_snapshot': copy.deepcopy(variant['data_snapshot']),
                 'runner': copy.deepcopy(variant['runner']),
                 'fixed_policy': copy.deepcopy(variant['fixed_policy']),
-                'evaluation': {
-                    'purpose': 'validation',
-                    'input_window': copy.deepcopy(variant['data_snapshot']['input_window']),
-                    'validation_window': copy.deepcopy(VALIDATION_WINDOW),
-                    'evidence_domain_id': EVIDENCE_DOMAIN_ID,
-                },
-                'baseline_result': {
-                    'result_id': self.baseline_result_id,
-                    'role': 'locked_default',
-                },
-                'seed_policy': 'none',
+                'baseline_result_id': variant['baseline_result_id'],
                 'holdout_access': 'not_configured',
-                'holdout_result': 'not_evaluated',
-                'robustness': 'not_required',
-                'evidence': evidence,
+                'created_at': now,
+                'started_at': None,
+                'finished_at': None,
+                'result_id': None,
+                'error': None,
+                'status_history': [{'status': 'queued', 'at': now}],
             }
-            content_hash = hashlib.sha256(canonical_json(content)).hexdigest()
-            result = {
-                'result_id': content_hash,
-                'content_sha256': content_hash,
-                'hash_scope': 'content',
-                'baseline_result_id': self.baseline_result_id,
-                'content': content,
-                'provenance': {
-                    'producing_run_id': run_id,
-                    'built_at': utc_now(),
-                },
-            }
-            self.store.create_immutable('results', content_hash, result)
-            run = self.store.read('runs', run_id)
-            finished_at = utc_now()
-            run['status'] = 'success'
-            run['outcome'] = 'success'
-            run['finished_at'] = finished_at
-            run['result_id'] = content_hash
-            run['status_history'].append({'status': 'success', 'at': finished_at})
+
+            reusable = self._result_for_variant(variant_id)
+            if reusable is not None:
+                run['status'] = 'skipped'
+                run['outcome'] = 'reused'
+                run['finished_at'] = now
+                run['result_id'] = reusable['result_id']
+                run['status_history'].append({
+                    'status': 'skipped',
+                    'at': now,
+                    'reason': 'exact_result_reused',
+                })
+                self.store.write_run(run_id, run)
+                return run, 200
+
+            active = self._active_run_for_variant(variant_id)
+            if active is not None:
+                response = copy.deepcopy(active)
+                response['deduplicated'] = True
+                return response, 202
+
             self.store.write_run(run_id, run)
-        except Exception as exc:
             try:
-                run = self.store.read('runs', run_id)
-            except Exception:
-                return
-            finished_at = utc_now()
-            run['status'] = 'failed'
-            run['outcome'] = 'failed'
-            run['finished_at'] = finished_at
-            run['error'] = {
-                'code': 'run_failed',
-                'message': str(exc),
-                'exception_type': type(exc).__name__,
-            }
-            run['status_history'].append({'status': 'failed', 'at': finished_at})
+                future = self._get_executor().submit(
+                    run_trend_validation,
+                    snapshot.worker_payload(),
+                    copy.deepcopy(variant['actual_config']),
+                )
+            except Exception as exc:
+                finished_at = utc_now()
+                run['status'] = 'failed'
+                run['outcome'] = 'failed'
+                run['finished_at'] = finished_at
+                run['error'] = {
+                    'code': 'executor_submit_failed',
+                    'message': 'validation worker did not accept the run',
+                    'exception_type': type(exc).__name__,
+                }
+                run['status_history'].append({
+                    'status': 'failed',
+                    'at': finished_at,
+                    'reason': 'executor_submit_failed',
+                })
+                self.store.write_run(run_id, run)
+                raise LabError(
+                    'worker_unavailable',
+                    'validation worker is unavailable; retry with a new run request',
+                    status=503,
+                    details={'run_id': run_id},
+                ) from exc
+
+            started_at = utc_now()
+            run['status'] = 'running'
+            run['started_at'] = started_at
+            run['status_history'].append({'status': 'running', 'at': started_at})
             self.store.write_run(run_id, run)
+            future.add_done_callback(
+                lambda completed, rid=run_id, var=copy.deepcopy(variant):
+                    self._finish_run(rid, var, completed)
+            )
+            return run, 202
+
+    def _finish_run(self, run_id: str, variant: dict[str, Any], future) -> None:
+        with self._submission_lock:
+            try:
+                evidence = future.result()
+                experiment = self.store.read('experiments', variant['experiment_id'])
+                content = {
+                    'schema_version': RESULT_SCHEMA_VERSION,
+                    'artifact_label': 'Research Experiment',
+                    'template': {
+                        'template_id': TEMPLATE_ID,
+                        'template_version': TEMPLATE_VERSION,
+                    },
+                    'variant': {
+                        'variant_id': variant['variant_id'],
+                        'canonical_patch': copy.deepcopy(variant['canonical_patch']),
+                    },
+                    'hypothesis_revision': copy.deepcopy(experiment['hypothesis_revision']),
+                    'actual_config': copy.deepcopy(variant['actual_config']),
+                    'data_snapshot': copy.deepcopy(variant['data_snapshot']),
+                    'runner': copy.deepcopy(variant['runner']),
+                    'fixed_policy': copy.deepcopy(variant['fixed_policy']),
+                    'evaluation': {
+                        'purpose': 'validation',
+                        'input_window': copy.deepcopy(
+                            variant['data_snapshot']['input_window']
+                        ),
+                        'validation_window': copy.deepcopy(VALIDATION_WINDOW),
+                        'evidence_domain_id': EVIDENCE_DOMAIN_ID,
+                    },
+                    'baseline_result': {
+                        'result_id': variant['baseline_result_id'],
+                        'role': 'locked_default',
+                    },
+                    'seed_policy': 'none',
+                    'holdout_access': 'not_configured',
+                    'holdout_result': 'not_evaluated',
+                    'robustness': 'not_required',
+                    'evidence': evidence,
+                }
+                content_hash = hashlib.sha256(canonical_json(content)).hexdigest()
+                result = {
+                    'result_id': content_hash,
+                    'content_sha256': content_hash,
+                    'hash_scope': 'content',
+                    'baseline_result_id': variant['baseline_result_id'],
+                    'content': content,
+                    'provenance': {
+                        'producing_run_id': run_id,
+                        'built_at': utc_now(),
+                    },
+                }
+                outcome = 'success'
+                try:
+                    self.store.create_immutable('results', content_hash, result)
+                except ArtifactConflictError:
+                    existing = self.store.read('results', content_hash)
+                    self._validate_result_document(existing, content_hash)
+                    if existing.get('content') != content:
+                        raise
+                    outcome = 'reused_after_compute'
+                run = self.store.read('runs', run_id)
+                finished_at = utc_now()
+                run['status'] = 'success'
+                run['outcome'] = outcome
+                run['finished_at'] = finished_at
+                run['result_id'] = content_hash
+                run['status_history'].append({
+                    'status': 'success',
+                    'at': finished_at,
+                    'reason': outcome,
+                })
+                self.store.write_run(run_id, run)
+            except Exception as exc:
+                try:
+                    run = self.store.read('runs', run_id)
+                except Exception:
+                    return
+                finished_at = utc_now()
+                run['status'] = 'failed'
+                run['outcome'] = 'failed'
+                run['finished_at'] = finished_at
+                run['error'] = {
+                    'code': 'run_failed',
+                    'message': str(exc),
+                    'exception_type': type(exc).__name__,
+                }
+                run['status_history'].append({'status': 'failed', 'at': finished_at})
+                self.store.write_run(run_id, run)
 
     def get_run(self, run_id: str) -> dict[str, Any]:
         try:
@@ -562,26 +727,7 @@ class LabService:
                 result = self.store.read('results', result_id)
             except (ArtifactNotFoundError, ValueError) as exc:
                 raise LabError('result_not_found', 'result not found', status=404) from exc
-        content = result.get('content')
-        if not isinstance(content, dict):
-            raise LabError(
-                'result_integrity_error',
-                'result content is missing or invalid',
-                status=409,
-            )
-        actual_hash = hashlib.sha256(canonical_json(content)).hexdigest()
-        if (
-            actual_hash != result.get('result_id')
-            or actual_hash != result.get('content_sha256')
-            or actual_hash != result_id
-        ):
-            raise LabError(
-                'result_integrity_error',
-                'result content hash does not match its immutable identity',
-                status=409,
-                details={'expected_result_id': result_id, 'actual_content_sha256': actual_hash},
-            )
-        return result
+        return self._validate_result_document(result, result_id)
 
     def compare(self, payload: Any) -> dict[str, Any]:
         body = _expect_object(payload, 'request')

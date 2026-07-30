@@ -146,6 +146,7 @@ def run_trend_validation(snapshot_payload: dict[str, Any], actual_config: dict[s
     previous_etf_close: float | None = None
     buy_bar_index: int | None = None
     pending_attempts = 0
+    cancelled_target: int | None = None
     total_cost = 0.0
     total_trade_notional = 0.0
     signal_switch_count = 0
@@ -160,6 +161,9 @@ def run_trend_validation(snapshot_payload: dict[str, Any], actual_config: dict[s
 
         # close(t) signal becomes the desired exposure at open(t+1).
         desired_target = previous_signal
+        if cancelled_target is not None and desired_target != cancelled_target:
+            cancelled_target = None
+            pending_attempts = 0
         etf_open = float(row['etf_open'])
         etf_close = float(row['etf_close'])
         if etf_open <= 0 or etf_close <= 0:
@@ -174,42 +178,46 @@ def run_trend_validation(snapshot_payload: dict[str, Any], actual_config: dict[s
         blocked = False
         limit_pct = float(policy['limit_pct'])
         if desired_target != current_target:
-            if desired_target == 1:
-                blocked = (
-                    previous_etf_close is not None
-                    and etf_open >= previous_etf_close * (1.0 + limit_pct - 1e-10)
-                )
-                if not blocked:
-                    cash, shares, fee, notional = _execute_buy(cash, etf_open, costs)
-                    if shares <= 0:
-                        raise ValueError(f'buy produced zero shares on {row["date"]}')
-                    current_target = 1
-                    buy_bar_index = bar_index
-                    action = 'buy'
+            if cancelled_target == desired_target:
+                action = 'cancelled'
             else:
-                blocked = (
-                    previous_etf_close is not None
-                    and etf_open <= previous_etf_close * (1.0 - limit_pct + 1e-10)
-                )
-                t_plus_one_ready = buy_bar_index is None or bar_index > buy_bar_index
-                if not blocked and t_plus_one_ready:
-                    proceeds, fee, notional = _execute_sell(shares, etf_open, costs)
-                    cash += proceeds
-                    shares = 0.0
-                    current_target = 0
-                    buy_bar_index = None
-                    action = 'sell'
-                elif not t_plus_one_ready:
-                    blocked = True
+                if desired_target == 1:
+                    blocked = (
+                        previous_etf_close is not None
+                        and etf_open >= previous_etf_close * (1.0 + limit_pct - 1e-10)
+                    )
+                    if not blocked:
+                        cash, shares, fee, notional = _execute_buy(cash, etf_open, costs)
+                        if shares <= 0:
+                            raise ValueError(f'buy produced zero shares on {row["date"]}')
+                        current_target = 1
+                        buy_bar_index = bar_index
+                        action = 'buy'
+                else:
+                    blocked = (
+                        previous_etf_close is not None
+                        and etf_open <= previous_etf_close * (1.0 - limit_pct + 1e-10)
+                    )
+                    t_plus_one_ready = buy_bar_index is None or bar_index > buy_bar_index
+                    if not blocked and t_plus_one_ready:
+                        proceeds, fee, notional = _execute_sell(shares, etf_open, costs)
+                        cash += proceeds
+                        shares = 0.0
+                        current_target = 0
+                        buy_bar_index = None
+                        action = 'sell'
+                    elif not t_plus_one_ready:
+                        blocked = True
 
-            if blocked:
-                pending_attempts += 1
-                action = 'blocked'
-                if pending_attempts > int(policy['limit_max_delay_days']):
-                    action = 'dropped'
+                if blocked:
+                    pending_attempts += 1
+                    action = 'blocked'
+                    if pending_attempts > int(policy['limit_max_delay_days']):
+                        action = 'dropped'
+                        cancelled_target = desired_target
+                        pending_attempts = 0
+                else:
                     pending_attempts = 0
-            else:
-                pending_attempts = 0
 
         if action in {'buy', 'sell'}:
             total_cost += fee
