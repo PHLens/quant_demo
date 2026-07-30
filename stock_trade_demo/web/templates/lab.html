@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block title %}Lab · CSI1000 Trend 101{% endblock %}
+{% block page_head %}
+<link rel="stylesheet" href="/static/css/lab.css">
+{% endblock %}
+
+{% block content %}
+<div class="lab-shell" data-lab-page>
+  <section class="lab-hero lab-hero--compact">
+    <div>
+      <p class="qr-eyebrow">Lab · One question, one variable</p>
+      <h1>CSI1000 Trend 101</h1>
+      <p class="lab-hero__lede">
+        先冻结假设，再只改变趋势窗口。运行进入隔离 worker，不写正式 Research、registry、best profile 或持仓记录。
+      </p>
+    </div>
+    <aside class="lab-hero__status">
+      <span class="lab-badge lab-badge--experiment">Research Experiment</span>
+      <strong>Validation MVP</strong>
+      <dl>
+        <div><dt>Baseline</dt><dd>N = 50</dd></div>
+        <div><dt>Variant</dt><dd>N = 20 / 100</dd></div>
+        <div><dt>OOS</dt><dd>not_configured</dd></div>
+      </dl>
+    </aside>
+  </section>
+
+  <div class="lab-truth-strip" role="note">
+    <strong>不是优化器：</strong>系统不排名、不自动选择 best，也不会把实验结果发布到正式策略。
+  </div>
+
+  <div class="lab-workspace">
+    <form class="lab-card lab-experiment-form" data-experiment-form>
+      <div class="lab-step-heading">
+        <span>1</span>
+        <div><p class="qr-eyebrow">Pre-register</p><h2>冻结你要验证的假设</h2></div>
+      </div>
+
+      <label class="lab-field">
+        <span>实验标题</span>
+        <input name="title" required minlength="3" maxlength="120"
+               value="趋势窗口敏感性检查">
+      </label>
+      <label class="lab-field">
+        <span>假设陈述</span>
+        <textarea name="statement" required minlength="10" rows="3">改变趋势窗口会影响信号切换次数与换手，但不应只按收益选择参数。</textarea>
+      </label>
+      <div class="lab-field-grid">
+        <label class="lab-field">
+          <span>预期方向 · signal switch count</span>
+          <select name="expected_direction" required>
+            <option value="increase">增加</option>
+            <option value="decrease">减少</option>
+            <option value="no_material_change">无显著变化</option>
+          </select>
+        </label>
+        <label class="lab-field">
+          <span>只改一个变量</span>
+          <select name="trend_window" required>
+            <option value="20">20 个交易日</option>
+            <option value="100">100 个交易日</option>
+          </select>
+        </label>
+      </div>
+      <label class="lab-field">
+        <span>否证条件</span>
+        <textarea name="falsification_condition" required minlength="10" rows="3">若信号切换次数没有朝预期方向变化，或成本明显放大，则不支持该假设。</textarea>
+      </label>
+
+      <div class="lab-locked-note">
+        <strong>服务器锁定：</strong>
+        <span data-contract-summary>正在核验 snapshot 与固定合同…</span>
+      </div>
+      <button class="lab-button lab-button--primary lab-button--wide" type="submit">
+        冻结假设并提交异步 validation
+      </button>
+      <p class="lab-form-error" data-form-error role="alert" hidden></p>
+    </form>
+
+    <aside class="lab-side-stack">
+      <section class="lab-card">
+        <div class="lab-step-heading">
+          <span>2</span>
+          <div><p class="qr-eyebrow">Identity</p><h2>本次证据身份</h2></div>
+        </div>
+        <dl class="lab-identity-list">
+          <div><dt>snapshot_id</dt><dd data-snapshot-id>—</dd></div>
+          <div><dt>content hash</dt><dd data-snapshot-hash>—</dd></div>
+          <div><dt>输入范围</dt><dd data-input-window>—</dd></div>
+          <div><dt>Validation</dt><dd data-validation-window>—</dd></div>
+          <div><dt>Baseline Result</dt><dd data-baseline-id>—</dd></div>
+          <div><dt>trial family count</dt><dd data-trial-count>—</dd></div>
+        </dl>
+      </section>
+
+      <section class="lab-card lab-run-card" data-run-card>
+        <div class="lab-step-heading">
+          <span>3</span>
+          <div><p class="qr-eyebrow">Run status</p><h2>异步运行状态</h2></div>
+        </div>
+        <div class="lab-empty-state" data-run-empty>
+          提交前不会运行任何计算。GET 仅查询已有状态。
+        </div>
+        <div data-run-detail hidden>
+          <div class="lab-run-status"><i data-run-dot></i><strong data-run-status>—</strong></div>
+          <dl class="lab-identity-list lab-identity-list--compact">
+            <div><dt>run_id</dt><dd data-run-id>—</dd></div>
+            <div><dt>result_id</dt><dd data-result-id>—</dd></div>
+          </dl>
+          <div class="lab-metric-grid" data-run-metrics></div>
+          <a class="lab-button lab-button--primary lab-button--wide"
+             data-compare-link href="/compare" hidden>进入同口径 Compare</a>
+        </div>
+      </section>
+    </aside>
+  </div>
+</div>
+<script src="/static/js/lab_ui.js"></script>
+{% endblock %}

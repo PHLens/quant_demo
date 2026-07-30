@@ -9,6 +9,7 @@
   - live_api       → 实盘记录 API（唯一写 live_trades.csv 的入口，走文件锁）
   - data_admin_api → 数据刷新 API
   - factor_explore_api → 行业热度 + 单因子回测只读 API
+  - lab_api        → Learn/Lab-1 严格命令与只读状态 API（独立 artifact）
 """
 from __future__ import annotations
 
@@ -23,8 +24,9 @@ from web import state
 from web.blueprints import (
     pages, select_api, timing_api, us_timing_api,
     live_api, data_admin_api, factor_explore_api, commodity_api,
-    hk_timing_api,
+    hk_timing_api, lab_api,
 )
+from lab.service import LabService, default_artifact_root
 
 
 def _sanitize_nan_for_json(obj):
@@ -56,7 +58,7 @@ class _NaNSafeJSONProvider(DefaultJSONProvider):
         return super().dumps(_sanitize_nan_for_json(obj), **kwargs)
 
 
-def create_app() -> Flask:
+def create_app(test_config=None) -> Flask:
     template_dir = os.path.join(os.path.dirname(__file__), 'templates')
     static_dir = os.path.join(os.path.dirname(__file__), 'static')
     app = Flask(__name__, template_folder=template_dir,
@@ -65,6 +67,20 @@ def create_app() -> Flask:
     # 全局 NaN 安全 JSON provider：防止任何端点意外序列化 float NaN → 非法 JSON
     app.json_provider_class = _NaNSafeJSONProvider
     app.json = _NaNSafeJSONProvider(app)
+    app.config.from_mapping(
+        LAB_ARTIFACT_ROOT=str(default_artifact_root()),
+        LAB_EXECUTOR_KIND='process',
+    )
+    if test_config:
+        app.config.update(test_config)
+
+    lab_service = app.config.get('LAB_SERVICE')
+    if lab_service is None:
+        lab_service = LabService(
+            app.config['LAB_ARTIFACT_ROOT'],
+            executor_kind=app.config['LAB_EXECUTOR_KIND'],
+        )
+    app.extensions['lab_service'] = lab_service
 
     app.register_blueprint(pages.bp)
     app.register_blueprint(select_api.bp)
@@ -75,6 +91,7 @@ def create_app() -> Flask:
     app.register_blueprint(factor_explore_api.bp)
     app.register_blueprint(commodity_api.bp)
     app.register_blueprint(hk_timing_api.bp)
+    app.register_blueprint(lab_api.bp)
 
     return app
 

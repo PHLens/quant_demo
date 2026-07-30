@@ -34,3 +34,18 @@ def commodity_page():
 @bp.route('/hk_timing')
 def hk_timing_page():
     return render_template('hk_timing.html')
+
+
+@bp.route('/learn')
+def learn_page():
+    return render_template('learn.html', page_key='learn')
+
+
+@bp.route('/lab')
+def lab_page():
+    return render_template('lab.html', page_key='lab')
+
+
+@bp.route('/compare')
+def compare_page():
+    return render_template('compare.html', page_key='compare')

@@ -4,8 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}量化研究工作台{% endblock %}</title>
-  {% block page_head %}{% endblock %}
   <link rel="stylesheet" href="/static/css/ui.css">
+  {% block page_head %}{% endblock %}
 </head>
 <body class="qr-page qr-page-{{ page_key|default('research') }}">
   <a class="qr-skip-link" href="#main-content">跳到主要内容</a>
@@ -21,6 +21,12 @@
       </a>
 
       <nav class="qr-primary-nav" aria-label="主要页面">
+        <span class="qr-nav-group" aria-label="学习实验">
+          <span class="qr-nav-group__label">学习实验</span>
+          <a href="/learn"{% if page_key == 'learn' %} aria-current="page"{% endif %}>Learn</a>
+          <a href="/lab"{% if page_key == 'lab' %} aria-current="page"{% endif %}>Lab</a>
+          <a href="/compare"{% if page_key == 'compare' %} aria-current="page"{% endif %}>Compare</a>
+        </span>
         <a href="/"{% if page_key == 'select' %} aria-current="page"{% endif %}>选股研究</a>
         <span class="qr-nav-group" aria-label="市场择时">
           <span class="qr-nav-group__label">市场择时</span>
@@ -51,6 +57,11 @@
         <button class="qr-icon-button" type="button" data-mobile-nav-close aria-label="关闭页面菜单">×</button>
       </div>
       <nav class="qr-mobile-nav" aria-label="移动端主要页面">
+        <span class="qr-mobile-nav__label">学习实验</span>
+        <a href="/learn"{% if page_key == 'learn' %} aria-current="page"{% endif %}>Learn · 概念与示例</a>
+        <a href="/lab"{% if page_key == 'lab' %} aria-current="page"{% endif %}>Lab · 受控实验</a>
+        <a href="/compare"{% if page_key == 'compare' %} aria-current="page"{% endif %}>Compare · 同口径比较</a>
+        <span class="qr-mobile-nav__label">正式只读研究</span>
         <a href="/"{% if page_key == 'select' %} aria-current="page"{% endif %}>A 股多因子选股研究</a>
         <span class="qr-mobile-nav__label">市场择时</span>
         <a href="/timing"{% if page_key == 'cn-timing' %} aria-current="page"{% endif %}>A 股择时</a>

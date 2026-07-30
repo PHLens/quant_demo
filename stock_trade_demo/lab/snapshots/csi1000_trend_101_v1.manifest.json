@@ -1,0 +1,38 @@
+{
+  "snapshot_id": "snapshot_csi1000_trend_101_v1_8193bfff89f4ae4b",
+  "file": "csi1000_trend_101_v1.csv",
+  "content_sha256": "8193bfff89f4ae4b7afce8f5115f7b4ef661371b6093ad7e076b029eb748ec66",
+  "row_count": 609,
+  "validation_row_count": 485,
+  "input_window": {
+    "start": "2023-07-03",
+    "end": "2025-12-31",
+    "purpose": "indicator_warmup_plus_validation"
+  },
+  "validation_window": {
+    "start": "2024-01-02",
+    "end": "2025-12-31",
+    "purpose": "validation"
+  },
+  "as_of": "2025-12-31",
+  "calendar": "CN_A_share_trading_days",
+  "timezone": "Asia/Shanghai",
+  "parents": [
+    {
+      "artifact_id": "index_data_csi1000_daily",
+      "content_sha256": "3ff072679ed5c88b6cefa009931039a8d83b7a912dc3b06ca59714eaf6e71d47",
+      "manifest_sha256": "951f481b2a440b96679b9dd682c18d65948351a291017a7b3bfa4a24e191461a",
+      "produced_by": "index_data.get_index_daily:csi1000",
+      "source_rows": 2856,
+      "source_written_at": "2026-07-16T13:30:17.655243+00:00"
+    },
+    {
+      "artifact_id": "timing_etf_csi1000_510980_qfq_daily",
+      "content_sha256": "5cb1a27ad16220fc41f5d82d3013919db71dfc69c1c315b6b982e586e7dfe407",
+      "manifest_sha256": "2b49a8b345398c0b38ca254b087f0060fab59211013faef4eee6e7fd450eae27",
+      "produced_by": "index_data.get_timing_etf_daily:akshare:510980:qfq",
+      "source_rows": 632,
+      "source_written_at": "2026-07-14T11:26:27.670281+00:00"
+    }
+  ]
+}

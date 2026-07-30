@@ -10,6 +10,10 @@ stock_data.csv
 data/live_trades.csv
 data/live_trades.csv.tmp
 
+# Learn/Lab-1 runtime metadata and immutable result artifacts. The packaged
+# snapshot/baseline live under stock_trade_demo/lab/ and remain tracked.
+stock_trade_demo/data/lab_artifacts/
+
 # 实时风险因子离线产物（scripts/build_risk_signals.py 生成），随数据刷新而变，不入 git
 strategy/risk_signals.json
 # Holdout 结构化报告（scripts/build_holdout_reports.py 生成的 sibling json），不入 git

@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}Learn · 量化研究入门{% endblock %}
+{% block page_head %}
+<link rel="stylesheet" href="/static/css/lab.css">
+{% endblock %}
+
+{% block content %}
+<div class="lab-shell" data-learn-page>
+  <section class="lab-hero">
+    <div>
+      <p class="qr-eyebrow">Learn · Evidence before performance</p>
+      <h1>先学会问对问题，再看收益曲线</h1>
+      <p class="lab-hero__lede">
+        用一个固定的 CSI1000 趋势例子，走完“规则 → 信号 → 下一交易日成交 → 风险与成本”的证据链。
+      </p>
+      <div class="lab-actions">
+        <a class="lab-button lab-button--primary" href="/lab">开始受控实验</a>
+        <a class="lab-button" href="/timing">查看正式只读研究</a>
+      </div>
+    </div>
+    <aside class="lab-hero__status" aria-label="当前学习范围">
+      <span class="lab-badge lab-badge--worked">Worked Example</span>
+      <strong>CSI1000 Trend 101</strong>
+      <dl>
+        <div><dt>证据阶段</dt><dd>Validation only</dd></div>
+        <div><dt>OOS</dt><dd>not_configured</dd></div>
+        <div><dt>可编辑</dt><dd>仅趋势窗口</dd></div>
+      </dl>
+    </aside>
+  </section>
+
+  <div class="lab-truth-strip" role="note">
+    <strong>边界：</strong>
+    Research 页面读取既有 artifact；Lab 只有明确提交 POST 后才创建异步 run。
+    recent 与 validation 都不是独立 OOS。
+  </div>
+
+  <section class="lab-section">
+    <div class="lab-section__heading">
+      <div>
+        <p class="qr-eyebrow">01 · Four checks</p>
+        <h2>读结果前的四道检查</h2>
+      </div>
+      <p>完成标准不是找到最高收益，而是能解释一次单变量敏感性检查。</p>
+    </div>
+    <div class="lab-topic-grid" data-learn-topics aria-live="polite">
+      <article class="lab-card lab-card--loading">正在读取学习主题…</article>
+    </div>
+  </section>
+
+  <section class="lab-section lab-section--split">
+    <article class="lab-card lab-worked">
+      <p class="qr-eyebrow">02 · Worked example</p>
+      <h2>一条信号如何变成结果</h2>
+      <div class="lab-flow" aria-label="信号到结果的时间顺序">
+        <div><span>收盘 t</span><strong>close(t) &gt; MA<sub>N</sub>(t)</strong><small>生成 0 / 1 信号</small></div>
+        <i aria-hidden="true">→</i>
+        <div><span>开盘 t+1</span><strong>510980 ETF open</strong><small>执行目标仓位与费用</small></div>
+        <i aria-hidden="true">→</i>
+        <div><span>收盘 t+1</span><strong>510980 ETF close</strong><small>估值、NAV 与回撤</small></div>
+      </div>
+      <div class="lab-formula">
+        <code>position(t) = 1 if close(t) &gt; mean(close, N) else 0</code>
+      </div>
+      <p class="lab-muted">
+        市场基准是 CSI1000 buy-and-hold；模板 baseline 是同 snapshot 下
+        <strong>N=50</strong> 的锁定 Result。二者职责不同。
+      </p>
+    </article>
+
+    <article class="lab-card lab-reading-order">
+      <p class="qr-eyebrow">03 · Reading order</p>
+      <h2>比较时按这个顺序读</h2>
+      <ol>
+        <li><strong>有效性</strong><span>snapshot 身份、bars、trades、可复放性</span></li>
+        <li><strong>风险</strong><span>最大回撤、波动、Calmar</span></li>
+        <li><strong>成本</strong><span>换手、交易次数、fee drag</span></li>
+        <li><strong>相对表现</strong><span>累计收益与 benchmark active return</span></li>
+        <li><strong>独立证据</strong><span>当前固定显示 OOS=not_configured</span></li>
+      </ol>
+    </article>
+  </section>
+</div>
+<script src="/static/js/lab_ui.js"></script>
+{% endblock %}

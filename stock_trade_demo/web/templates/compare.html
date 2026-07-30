@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}Compare · 同口径 Validation 比较{% endblock %}
+{% block page_head %}
+<link rel="stylesheet" href="/static/css/lab.css">
+{% endblock %}
+
+{% block content %}
+<div class="lab-shell" data-compare-page>
+  <section class="lab-hero lab-hero--compact">
+    <div>
+      <p class="qr-eyebrow">Compare · Contract first</p>
+      <h1>只有严格可比，才显示差值</h1>
+      <p class="lab-hero__lede">
+        snapshot、runner、benchmark、成本、时钟、资本和 validation 窗口任一不同，
+        页面只分别展示绝对值，不生成“更好”结论。
+      </p>
+    </div>
+    <aside class="lab-hero__status">
+      <span class="lab-badge lab-badge--compare">Same-contract gate</span>
+      <strong>Baseline → Variant</strong>
+      <dl>
+        <div><dt>唯一变化</dt><dd>trend_window</dd></div>
+        <div><dt>自动排名</dt><dd>disabled</dd></div>
+        <div><dt>OOS</dt><dd>not_configured</dd></div>
+      </dl>
+    </aside>
+  </section>
+
+  <div class="lab-compare-layout">
+    <section class="lab-card">
+      <p class="qr-eyebrow">Comparison input</p>
+      <h2>选择已成功的 Variant Result</h2>
+      <form data-compare-form>
+        <label class="lab-field">
+          <span>锁定 baseline Result</span>
+          <input data-compare-baseline readonly value="正在读取…">
+        </label>
+        <label class="lab-field">
+          <span>Candidate result_id</span>
+          <input name="candidate_result_id" data-compare-candidate required
+                 placeholder="从 Lab 成功 run 带入 result_id">
+        </label>
+        <button class="lab-button lab-button--primary lab-button--wide" type="submit">
+          执行可比性检查
+        </button>
+        <p class="lab-form-error" data-compare-error role="alert" hidden></p>
+      </form>
+    </section>
+
+    <section class="lab-card lab-gate-card" data-gate-card>
+      <p class="qr-eyebrow">Gate status</p>
+      <h2 data-gate-title>等待检查</h2>
+      <p class="lab-muted" data-gate-copy>输入 candidate Result 后，服务器逐字段核对固定合同。</p>
+      <dl class="lab-identity-list" data-compare-identity hidden>
+        <div><dt>snapshot_id</dt><dd data-compare-snapshot>—</dd></div>
+        <div><dt>content hash</dt><dd data-compare-hash>—</dd></div>
+        <div><dt>输入范围</dt><dd data-compare-input>—</dd></div>
+        <div><dt>Validation</dt><dd data-compare-window>—</dd></div>
+        <div><dt>Baseline Result</dt><dd data-compare-baseline-id>—</dd></div>
+      </dl>
+    </section>
+  </div>
+
+  <section class="lab-section" data-comparison-results hidden>
+    <div class="lab-section__heading">
+      <div><p class="qr-eyebrow">Validation evidence</p><h2>绝对值与单变量差值</h2></div>
+      <p>先读样本、回撤与成本；差值不等于胜负。</p>
+    </div>
+    <div class="lab-comparison-table-wrap">
+      <table class="lab-comparison-table">
+        <thead><tr><th>观察量</th><th>Baseline · N=50</th><th>Variant</th><th>Δ Variant − Baseline</th></tr></thead>
+        <tbody data-comparison-body></tbody>
+      </table>
+    </div>
+    <div class="lab-interpretation">
+      <strong>解释提示</strong>
+      <p data-interpretation-note></p>
+      <ul>
+        <li>主观察量是否按预注册方向变化？</li>
+        <li>换手、费用与最大回撤是否给出替代解释？</li>
+        <li>这是 validation 敏感性，不是独立 OOS，也不会自动晋级。</li>
+      </ul>
+    </div>
+  </section>
+</div>
+<script src="/static/js/lab_ui.js"></script>
+{% endblock %}
